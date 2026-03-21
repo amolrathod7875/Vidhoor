@@ -110,6 +110,36 @@ function ChatApp() {
     setActiveId(null);
   };
 
+  const handleDeleteSession = (id: string) => {
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+    if (activeId === id) setActiveId(null);
+    toast.success("Chat deleted");
+  };
+
+  const handleShareSession = async (id: string) => {
+    const session = sessions.find((s) => s.id === id);
+    if (!session) return;
+
+    const text = session.messages
+      .map((m) => `${m.role === "user" ? "You" : "Vidhoor"}: ${m.content}`)
+      .join("\n\n");
+
+    const shareData = { title: session.title, text };
+
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch {
+        /* user cancelled */
+      }
+    } else {
+      await navigator.clipboard.writeText(
+        `${session.title}\n\n${text || "(empty chat)"}`
+      );
+      toast.success("Chat copied to clipboard");
+    }
+  };
+
   // Filter out temp sessions from sidebar display
   const sidebarSessions = sessions.filter(
     (s) => !s.title.startsWith("⌛ ")
