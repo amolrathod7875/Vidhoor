@@ -3,6 +3,7 @@ import { ArrowUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import TextareaAutosize from "react-textarea-autosize";
+import { useAuth } from "@/hooks/useAuth";
 
 interface Props {
   onSend: (text: string) => void;
@@ -12,10 +13,13 @@ interface Props {
 
 export function ChatInput({ onSend, disabled, guestRemaining }: Props) {
   const [text, setText] = useState("");
+  const { user } = useAuth();
+
+  const isBlocked = !user && disabled;
 
   const handleSend = () => {
     const trimmed = text.trim();
-    if (!trimmed || disabled) return;
+    if (!trimmed || isBlocked) return;
     onSend(trimmed);
     setText("");
   };
@@ -29,27 +33,29 @@ export function ChatInput({ onSend, disabled, guestRemaining }: Props) {
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-      {/* Guest counter pill */}
-      <div className="mb-3 flex justify-center">
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-muted/50 px-3.5 py-1 text-xs text-muted-foreground backdrop-blur-sm">
-          Guest Mode: {guestRemaining}/5 free queries remaining
-        </span>
-      </div>
+      {/* Guest counter pill — only show when not authenticated */}
+      {!user && (
+        <div className="mb-3 flex justify-center">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-muted/50 px-3.5 py-1 text-xs text-muted-foreground backdrop-blur-sm">
+            Guest Mode: {guestRemaining}/5 free queries remaining
+          </span>
+        </div>
+      )}
 
       {/* Input box */}
       <div
         className={cn(
           "relative flex items-end rounded-2xl border border-border/50 bg-card shadow-sm transition-all duration-200 focus-within:border-primary/40 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/20",
-          disabled && "opacity-50"
+          isBlocked && "opacity-50"
         )}
       >
         <TextareaAutosize
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={disabled}
+          disabled={isBlocked}
           placeholder={
-            disabled
+            isBlocked
               ? "Sign in to continue…"
               : "Ask Vidhoor a legal question…"
           }
@@ -60,7 +66,7 @@ export function ChatInput({ onSend, disabled, guestRemaining }: Props) {
         <Button
           size="icon"
           onClick={handleSend}
-          disabled={disabled || !text.trim()}
+          disabled={isBlocked || !text.trim()}
           className="m-1.5 h-8 w-8 shrink-0 rounded-xl transition-all active:scale-95"
         >
           <ArrowUp className="h-4 w-4" />

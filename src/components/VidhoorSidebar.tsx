@@ -1,7 +1,16 @@
-import { Plus, Sun, Moon, LogIn, MessageSquare } from "lucide-react";
+import {
+  Plus,
+  Sun,
+  Moon,
+  LogIn,
+  MessageSquare,
+  LogOut,
+  User as UserIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useTheme } from "@/hooks/useTheme";
+import { useAuth } from "@/hooks/useAuth";
 import { ChatSession } from "@/types/chat";
 import { cn } from "@/lib/utils";
 import {
@@ -11,6 +20,13 @@ import {
   SidebarHeader,
   useSidebar,
 } from "@/components/ui/sidebar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 interface Props {
   sessions: ChatSession[];
@@ -28,8 +44,18 @@ export function VidhoorSidebar({
   onLoginClick,
 }: Props) {
   const { theme, toggle } = useTheme();
+  const { user, logout } = useAuth();
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
+
+  const initials = user?.displayName
+    ? user.displayName
+        .split(" ")
+        .map((n) => n[0])
+        .join("")
+        .toUpperCase()
+        .slice(0, 2)
+    : user?.email?.[0]?.toUpperCase() ?? "U";
 
   return (
     <Sidebar collapsible="icon" className="border-r-0">
@@ -63,9 +89,7 @@ export function VidhoorSidebar({
                 )}
               >
                 <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
-                {!collapsed && (
-                  <span className="truncate">{s.title}</span>
-                )}
+                {!collapsed && <span className="truncate">{s.title}</span>}
               </button>
             ))}
           </div>
@@ -73,6 +97,7 @@ export function VidhoorSidebar({
       </SidebarContent>
 
       <SidebarFooter className="space-y-1 p-3">
+        {/* Theme toggle */}
         <Button
           variant="ghost"
           size="sm"
@@ -93,18 +118,64 @@ export function VidhoorSidebar({
             </span>
           )}
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onLoginClick}
-          className={cn(
-            "w-full justify-start gap-2.5 rounded-xl transition-colors active:scale-[0.97]",
-            collapsed && "justify-center px-0"
-          )}
-        >
-          <LogIn className="h-4 w-4 shrink-0" />
-          {!collapsed && <span className="text-sm">Login / Sign Up</span>}
-        </Button>
+
+        {/* Auth section */}
+        {user ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "w-full justify-start gap-2.5 rounded-xl transition-colors active:scale-[0.97]",
+                  collapsed && "justify-center px-0"
+                )}
+              >
+                <Avatar className="h-6 w-6">
+                  <AvatarImage src={user.photoURL ?? undefined} />
+                  <AvatarFallback className="text-[10px] bg-primary/15 text-primary">
+                    {initials}
+                  </AvatarFallback>
+                </Avatar>
+                {!collapsed && (
+                  <span className="truncate text-sm">
+                    {user.displayName || user.email}
+                  </span>
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56 rounded-xl">
+              <div className="px-3 py-2">
+                <p className="text-sm font-medium truncate">
+                  {user.displayName || "User"}
+                </p>
+                <p className="text-xs text-muted-foreground truncate">
+                  {user.email}
+                </p>
+              </div>
+              <DropdownMenuItem
+                onClick={logout}
+                className="gap-2 rounded-lg text-destructive focus:text-destructive"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign Out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onLoginClick}
+            className={cn(
+              "w-full justify-start gap-2.5 rounded-xl transition-colors active:scale-[0.97]",
+              collapsed && "justify-center px-0"
+            )}
+          >
+            <LogIn className="h-4 w-4 shrink-0" />
+            {!collapsed && <span className="text-sm">Login / Sign Up</span>}
+          </Button>
+        )}
       </SidebarFooter>
     </Sidebar>
   );
