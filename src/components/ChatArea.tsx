@@ -3,9 +3,17 @@ import { Message } from "@/types/chat";
 import { Scale } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+const PROMPT_CHIPS = [
+  "Draft a bail application",
+  "Explain BNS Section 302",
+  "Consumer complaint format",
+  "IPR patent infringement basics",
+];
+
 interface Props {
   messages: Message[];
   isTyping: boolean;
+  onChipClick?: (text: string) => void;
 }
 
 export function ChatArea({ messages, isTyping }: Props) {
