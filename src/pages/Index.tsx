@@ -5,6 +5,7 @@ import { ChatArea } from "@/components/ChatArea";
 import { ChatInput } from "@/components/ChatInput";
 import { LoginModal } from "@/components/LoginModal";
 import { ThemeProvider } from "@/hooks/useTheme";
+import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { ChatSession, Message } from "@/types/chat";
 import { Ghost, EyeOff } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
@@ -25,7 +26,8 @@ const AI_RESPONSES = [
 
 let nextId = 100;
 
-export default function Index() {
+function ChatApp() {
+  const { user } = useAuth();
   const [sessions, setSessions] = useState<ChatSession[]>(SAMPLE_SESSIONS);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [guestRemaining, setGuestRemaining] = useState(5);
@@ -59,12 +61,14 @@ export default function Index() {
         messages: [],
       };
 
-      // Only add to sidebar if NOT temporary chat
-      if (!tempChat) {
-        setSessions((prev) => [newSession, ...prev]);
+      if (tempChat) {
+        // Temporary chat — keep in state but mark as hidden from sidebar
+        setSessions((prev) => [
+          { ...newSession, title: "⌛ " + newSession.title },
+          ...prev,
+        ]);
       } else {
-        // Still need it in state for messages, but prefix title
-        setSessions((prev) => [{ ...newSession, title: "⌛ " + newSession.title }, ...prev]);
+        setSessions((prev) => [newSession, ...prev]);
       }
 
       sid = newSession.id;
@@ -73,8 +77,15 @@ export default function Index() {
 
     addMessage("user", text, sid);
 
-    const newRemaining = guestRemaining - 1;
-    setGuestRemaining(newRemaining);
+    // Guest mode: decrement counter only when unauthenticated
+    if (!user) {
+      const newRemaining = guestRemaining - 1;
+      setGuestRemaining(newRemaining);
+
+      if (newRemaining <= 0) {
+        setTimeout(() => setLoginOpen(true), 2000);
+      }
+    }
 
     // Typing indicator then response
     setIsTyping(true);
@@ -83,10 +94,6 @@ export default function Index() {
       setIsTyping(false);
       addMessage("assistant", AI_RESPONSES[responseIdx], sid!);
     }, 1500);
-
-    if (newRemaining <= 0) {
-      setTimeout(() => setLoginOpen(true), 2000);
-    }
   };
 
   const handleNewChat = () => {
@@ -95,74 +102,86 @@ export default function Index() {
   };
 
   // Filter out temp sessions from sidebar display
-  const sidebarSessions = sessions.filter((s) => !s.title.startsWith("⌛ "));
+  const sidebarSessions = sessions.filter(
+    (s) => !s.title.startsWith("⌛ ")
+  );
+
+  const inputDisabled = !user && guestRemaining <= 0;
 
   return (
-    <ThemeProvider>
-      <SidebarProvider>
-        <div className="flex min-h-screen w-full bg-background">
-          <VidhoorSidebar
-            sessions={sidebarSessions}
-            activeSessionId={activeId}
-            onSelectSession={setActiveId}
-            onNewChat={handleNewChat}
-            onLoginClick={() => setLoginOpen(true)}
+    <SidebarProvider>
+      <div className="flex min-h-screen w-full bg-background">
+        <VidhoorSidebar
+          sessions={sidebarSessions}
+          activeSessionId={activeId}
+          onSelectSession={setActiveId}
+          onNewChat={handleNewChat}
+          onLoginClick={() => setLoginOpen(true)}
+        />
+
+        <div className="flex flex-1 flex-col">
+          {/* Header */}
+          <header
+            className={cn(
+              "flex h-12 items-center justify-between border-b px-3 transition-colors",
+              tempChat
+                ? "border-primary/20 bg-primary/5"
+                : "border-border/40"
+            )}
+          >
+            <div className="flex items-center gap-2">
+              <SidebarTrigger />
+              <span className="text-sm font-medium text-foreground/70">
+                Vidhoor
+              </span>
+              {tempChat && (
+                <span className="ml-1 flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                  <EyeOff className="h-3 w-3" />
+                  Private
+                </span>
+              )}
+            </div>
+
+            {/* Temporary Chat toggle */}
+            <div className="flex items-center gap-2">
+              <Ghost className="h-4 w-4 text-muted-foreground" />
+              <span className="hidden text-xs text-muted-foreground sm:inline">
+                Temporary
+              </span>
+              <Switch
+                checked={tempChat}
+                onCheckedChange={setTempChat}
+                className="data-[state=checked]:bg-primary"
+              />
+            </div>
+          </header>
+
+          {/* Chat area */}
+          <ChatArea
+            messages={activeSession?.messages ?? []}
+            isTyping={isTyping}
           />
 
-          <div className="flex flex-1 flex-col">
-            {/* Header */}
-            <header
-              className={cn(
-                "flex h-12 items-center justify-between border-b px-3 transition-colors",
-                tempChat
-                  ? "border-primary/20 bg-primary/5"
-                  : "border-border/40"
-              )}
-            >
-              <div className="flex items-center gap-2">
-                <SidebarTrigger />
-                <span className="text-sm font-medium text-foreground/70">
-                  Vidhoor
-                </span>
-                {tempChat && (
-                  <span className="ml-1 flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-                    <EyeOff className="h-3 w-3" />
-                    Private
-                  </span>
-                )}
-              </div>
-
-              {/* Temporary Chat toggle */}
-              <div className="flex items-center gap-2">
-                <Ghost className="h-4 w-4 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground hidden sm:inline">
-                  Temporary
-                </span>
-                <Switch
-                  checked={tempChat}
-                  onCheckedChange={setTempChat}
-                  className="data-[state=checked]:bg-primary"
-                />
-              </div>
-            </header>
-
-            {/* Chat area */}
-            <ChatArea
-              messages={activeSession?.messages ?? []}
-              isTyping={isTyping}
-            />
-
-            {/* Input */}
-            <ChatInput
-              onSend={handleSend}
-              disabled={guestRemaining <= 0}
-              guestRemaining={guestRemaining}
-            />
-          </div>
+          {/* Input */}
+          <ChatInput
+            onSend={handleSend}
+            disabled={inputDisabled}
+            guestRemaining={guestRemaining}
+          />
         </div>
+      </div>
 
-        <LoginModal open={loginOpen} onOpenChange={setLoginOpen} />
-      </SidebarProvider>
+      <LoginModal open={loginOpen} onOpenChange={setLoginOpen} />
+    </SidebarProvider>
+  );
+}
+
+export default function Index() {
+  return (
+    <ThemeProvider>
+      <AuthProvider>
+        <ChatApp />
+      </AuthProvider>
     </ThemeProvider>
   );
 }
