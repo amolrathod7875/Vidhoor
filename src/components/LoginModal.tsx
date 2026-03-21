@@ -34,13 +34,23 @@ export function LoginModal({ open, onOpenChange }: Props) {
         >
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
-            <Input id="email" type="email" placeholder="you@example.com" className="rounded-xl" />
+            <Input
+              id="email"
+              type="email"
+              placeholder="you@example.com"
+              className="rounded-xl"
+            />
           </div>
           <div className="space-y-2">
             <Label htmlFor="password">Password</Label>
-            <Input id="password" type="password" placeholder="••••••••" className="rounded-xl" />
+            <Input
+              id="password"
+              type="password"
+              placeholder="••••••••"
+              className="rounded-xl"
+            />
           </div>
-          <Button type="submit" className="w-full rounded-xl">
+          <Button type="submit" className="w-full rounded-xl active:scale-[0.97] transition-transform">
             Sign In
           </Button>
         </form>

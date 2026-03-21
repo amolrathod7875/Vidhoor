@@ -3,21 +3,20 @@ import { createContext, useContext, useEffect, useState, ReactNode } from "react
 type Theme = "light" | "dark";
 
 const ThemeContext = createContext<{ theme: Theme; toggle: () => void }>({
-  theme: "light",
+  theme: "dark",
   toggle: () => {},
 });
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window !== "undefined") {
-      return (localStorage.getItem("vidhoor-theme") as Theme) || "light";
+      return (localStorage.getItem("vidhoor-theme") as Theme) || "dark";
     }
-    return "light";
+    return "dark";
   });
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.classList.toggle("dark", theme === "dark");
+    document.documentElement.classList.toggle("dark", theme === "dark");
     localStorage.setItem("vidhoor-theme", theme);
   }, [theme]);
 
