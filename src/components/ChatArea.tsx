@@ -16,7 +16,7 @@ interface Props {
   onChipClick?: (text: string) => void;
 }
 
-export function ChatArea({ messages, isTyping }: Props) {
+export function ChatArea({ messages, isTyping, onChipClick }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
