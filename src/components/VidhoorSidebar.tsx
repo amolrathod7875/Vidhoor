@@ -179,6 +179,13 @@ export function VidhoorSidebar({
                         className="w-40 rounded-xl"
                       >
                         <DropdownMenuItem
+                          onClick={() => startRename(s.id, s.title)}
+                          className="gap-2 rounded-lg text-sm"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          Rename
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
                           onClick={() => onShareSession(s.id)}
                           className="gap-2 rounded-lg text-sm"
                         >
