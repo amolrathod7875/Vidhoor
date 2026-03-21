@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { VidhoorSidebar } from "@/components/VidhoorSidebar";
 import { ChatArea } from "@/components/ChatArea";
@@ -7,7 +7,7 @@ import { LoginModal } from "@/components/LoginModal";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { ChatSession, Message } from "@/types/chat";
-import { Ghost, EyeOff } from "lucide-react";
+import { Ghost, EyeOff, ShieldAlert } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
@@ -34,8 +34,17 @@ function ChatApp() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [tempChat, setTempChat] = useState(false);
+  const prevTempChat = useRef(tempChat);
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
+
+  // Clear active chat when tempChat toggled
+  useEffect(() => {
+    if (prevTempChat.current !== tempChat) {
+      setActiveId(null);
+      prevTempChat.current = tempChat;
+    }
+  }, [tempChat]);
 
   const addMessage = useCallback(
     (role: Message["role"], content: string, sessionId: string) => {
@@ -98,7 +107,6 @@ function ChatApp() {
 
   const handleNewChat = () => {
     setActiveId(null);
-    setTempChat(false);
   };
 
   // Filter out temp sessions from sidebar display
@@ -117,43 +125,41 @@ function ChatApp() {
           onSelectSession={setActiveId}
           onNewChat={handleNewChat}
           onLoginClick={() => setLoginOpen(true)}
+          tempChat={tempChat}
         />
 
         <div className="flex flex-1 flex-col">
           {/* Header */}
-          <header
-            className={cn(
-              "flex h-12 items-center justify-between border-b px-3 transition-colors",
-              tempChat
-                ? "border-primary/20 bg-primary/5"
-                : "border-border/40"
-            )}
-          >
-            <div className="flex items-center gap-2">
-              <SidebarTrigger />
-              <span className="text-sm font-medium text-foreground/70">
-                Vidhoor
-              </span>
-              {tempChat && (
-                <span className="ml-1 flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-                  <EyeOff className="h-3 w-3" />
-                  Private
+          <header className="flex flex-col border-b border-border/40">
+            <div className="flex h-12 items-center justify-between px-3">
+              <div className="flex items-center gap-2">
+                <SidebarTrigger />
+                <span className="text-sm font-medium text-foreground/70">
+                  Vidhoor
                 </span>
-              )}
+              </div>
+
+              {/* Temporary Chat toggle */}
+              <div className="flex items-center gap-2">
+                <Ghost className="h-4 w-4 text-muted-foreground" />
+                <span className="hidden text-xs text-muted-foreground sm:inline">
+                  Temporary
+                </span>
+                <Switch
+                  checked={tempChat}
+                  onCheckedChange={setTempChat}
+                  className="data-[state=checked]:bg-primary"
+                />
+              </div>
             </div>
 
-            {/* Temporary Chat toggle */}
-            <div className="flex items-center gap-2">
-              <Ghost className="h-4 w-4 text-muted-foreground" />
-              <span className="hidden text-xs text-muted-foreground sm:inline">
-                Temporary
-              </span>
-              <Switch
-                checked={tempChat}
-                onCheckedChange={setTempChat}
-                className="data-[state=checked]:bg-primary"
-              />
-            </div>
+            {/* Temp chat warning banner */}
+            {tempChat && (
+              <div className="flex items-center justify-center gap-2 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary animate-fade-in-up">
+                <ShieldAlert className="h-3.5 w-3.5" />
+                Temporary Chat: This conversation will not be saved.
+              </div>
+            )}
           </header>
 
           {/* Chat area */}

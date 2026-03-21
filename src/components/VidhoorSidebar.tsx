@@ -5,7 +5,7 @@ import {
   LogIn,
   MessageSquare,
   LogOut,
-  User as UserIcon,
+  Ghost,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -34,6 +34,7 @@ interface Props {
   onSelectSession: (id: string) => void;
   onNewChat: () => void;
   onLoginClick: () => void;
+  tempChat: boolean;
 }
 
 export function VidhoorSidebar({
@@ -42,6 +43,7 @@ export function VidhoorSidebar({
   onSelectSession,
   onNewChat,
   onLoginClick,
+  tempChat,
 }: Props) {
   const { theme, toggle } = useTheme();
   const { user, logout } = useAuth();
@@ -73,27 +75,44 @@ export function VidhoorSidebar({
       </SidebarHeader>
 
       <SidebarContent className="px-2">
-        <ScrollArea className="flex-1">
-          <div className="space-y-0.5 py-2">
-            {sessions.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => onSelectSession(s.id)}
-                className={cn(
-                  "group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm transition-colors",
-                  "hover:bg-accent",
-                  activeSessionId === s.id
-                    ? "bg-accent font-medium text-accent-foreground"
-                    : "text-muted-foreground",
-                  collapsed && "justify-center px-2"
-                )}
-              >
-                <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
-                {!collapsed && <span className="truncate">{s.title}</span>}
-              </button>
-            ))}
+        {tempChat ? (
+          /* Temporary chat: hide history, show placeholder */
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-12 text-center">
+            {!collapsed && (
+              <>
+                <Ghost className="h-10 w-10 text-muted-foreground/40" />
+                <p className="text-xs leading-relaxed text-muted-foreground/60">
+                  History is hidden during Temporary Chat.
+                </p>
+              </>
+            )}
+            {collapsed && (
+              <Ghost className="h-5 w-5 text-muted-foreground/40" />
+            )}
           </div>
-        </ScrollArea>
+        ) : (
+          <ScrollArea className="flex-1">
+            <div className="space-y-0.5 py-2">
+              {sessions.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => onSelectSession(s.id)}
+                  className={cn(
+                    "group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm transition-colors",
+                    "hover:bg-accent",
+                    activeSessionId === s.id
+                      ? "bg-accent font-medium text-accent-foreground"
+                      : "text-muted-foreground",
+                    collapsed && "justify-center px-2"
+                  )}
+                >
+                  <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
+                  {!collapsed && <span className="truncate">{s.title}</span>}
+                </button>
+              ))}
+            </div>
+          </ScrollArea>
+        )}
       </SidebarContent>
 
       <SidebarFooter className="space-y-1 p-3">
