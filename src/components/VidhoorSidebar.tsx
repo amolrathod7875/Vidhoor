@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect, KeyboardEvent } from "react";
 import {
   Plus,
   Sun,
@@ -9,6 +10,7 @@ import {
   MoreHorizontal,
   Trash2,
   Share2,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
