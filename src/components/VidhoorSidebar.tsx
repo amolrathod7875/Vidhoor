@@ -6,6 +6,9 @@ import {
   MessageSquare,
   LogOut,
   Ghost,
+  MoreHorizontal,
+  Trash2,
+  Share2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -34,6 +37,8 @@ interface Props {
   onSelectSession: (id: string) => void;
   onNewChat: () => void;
   onLoginClick: () => void;
+  onDeleteSession: (id: string) => void;
+  onShareSession: (id: string) => void;
   tempChat: boolean;
 }
 
@@ -43,6 +48,8 @@ export function VidhoorSidebar({
   onSelectSession,
   onNewChat,
   onLoginClick,
+  onDeleteSession,
+  onShareSession,
   tempChat,
 }: Props) {
   const { theme, toggle } = useTheme();
@@ -76,7 +83,6 @@ export function VidhoorSidebar({
 
       <SidebarContent className="px-2">
         {tempChat ? (
-          /* Temporary chat: hide history, show placeholder */
           <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-12 text-center">
             {!collapsed && (
               <>
@@ -94,21 +100,61 @@ export function VidhoorSidebar({
           <ScrollArea className="flex-1">
             <div className="space-y-0.5 py-2">
               {sessions.map((s) => (
-                <button
+                <div
                   key={s.id}
-                  onClick={() => onSelectSession(s.id)}
                   className={cn(
-                    "group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm transition-colors",
+                    "group flex w-full items-center rounded-xl transition-colors",
                     "hover:bg-accent",
                     activeSessionId === s.id
                       ? "bg-accent font-medium text-accent-foreground"
                       : "text-muted-foreground",
-                    collapsed && "justify-center px-2"
+                    collapsed && "justify-center"
                   )}
                 >
-                  <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
-                  {!collapsed && <span className="truncate">{s.title}</span>}
-                </button>
+                  <button
+                    onClick={() => onSelectSession(s.id)}
+                    className={cn(
+                      "flex flex-1 items-center gap-2.5 px-3 py-2.5 text-left text-sm min-w-0",
+                      collapsed && "justify-center px-2"
+                    )}
+                  >
+                    <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
+                    {!collapsed && (
+                      <span className="truncate">{s.title}</span>
+                    )}
+                  </button>
+
+                  {/* Context menu — visible on hover, hidden when collapsed */}
+                  {!collapsed && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button className="mr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg opacity-0 transition-opacity hover:bg-background/60 group-hover:opacity-100 focus-visible:opacity-100">
+                          <MoreHorizontal className="h-3.5 w-3.5" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        align="start"
+                        side="right"
+                        className="w-40 rounded-xl"
+                      >
+                        <DropdownMenuItem
+                          onClick={() => onShareSession(s.id)}
+                          className="gap-2 rounded-lg text-sm"
+                        >
+                          <Share2 className="h-3.5 w-3.5" />
+                          Share
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => onDeleteSession(s.id)}
+                          className="gap-2 rounded-lg text-sm text-destructive focus:text-destructive"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                </div>
               ))}
             </div>
           </ScrollArea>
