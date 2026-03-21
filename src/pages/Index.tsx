@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { toast } from "sonner";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { VidhoorSidebar } from "@/components/VidhoorSidebar";
 import { ChatArea } from "@/components/ChatArea";
