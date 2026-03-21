@@ -5,22 +5,24 @@ import { cn } from "@/lib/utils";
 
 interface Props {
   messages: Message[];
+  isTyping: boolean;
 }
 
-export function ChatArea({ messages }: Props) {
+export function ChatArea({ messages, isTyping }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, isTyping]);
 
-  if (messages.length === 0) {
+  if (messages.length === 0 && !isTyping) {
     return (
-      <div className="flex flex-1 items-center justify-center px-6">
+      <div className="flex flex-1 items-center justify-center px-8">
         <h1
-          className="text-center text-4xl font-semibold tracking-tight sm:text-5xl md:text-6xl"
+          className="max-w-2xl text-center text-4xl font-semibold tracking-tight sm:text-5xl lg:text-6xl animate-fade-in-up"
           style={{
-            background: "linear-gradient(135deg, hsl(220 70% 55%), hsl(280 60% 55%), hsl(340 65% 55%))",
+            background:
+              "linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary) / 0.6), hsl(var(--primary) / 0.4))",
             WebkitBackgroundClip: "text",
             WebkitTextFillColor: "transparent",
             lineHeight: 1.15,
@@ -34,32 +36,47 @@ export function ChatArea({ messages }: Props) {
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto px-4 py-6">
-      <div className="mx-auto w-full max-w-3xl space-y-6">
-        {messages.map((msg) => (
+      <div className="mx-auto w-full max-w-3xl space-y-5">
+        {messages.map((msg, i) => (
           <div
             key={msg.id}
             className={cn(
-              "flex gap-3",
+              "flex gap-3 animate-fade-in-up",
               msg.role === "user" ? "justify-end" : "justify-start"
             )}
+            style={{ animationDelay: `${Math.min(i * 60, 300)}ms` }}
           >
             {msg.role === "assistant" && (
-              <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                <Scale className="h-4 w-4 text-primary" />
+              <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15">
+                <Scale className="h-3.5 w-3.5 text-primary" />
               </div>
             )}
             <div
               className={cn(
                 "max-w-[80%] whitespace-pre-wrap text-[15px] leading-relaxed",
                 msg.role === "user"
-                  ? "rounded-2xl bg-secondary px-4 py-3 text-secondary-foreground"
-                  : "pt-1 text-foreground"
+                  ? "rounded-2xl bg-chat-bubble px-4 py-3 text-chat-bubble-foreground"
+                  : "pt-0.5 text-foreground"
               )}
             >
               {msg.content}
             </div>
           </div>
         ))}
+
+        {isTyping && (
+          <div className="flex items-start gap-3 animate-fade-in-up">
+            <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15">
+              <Scale className="h-3.5 w-3.5 text-primary" />
+            </div>
+            <div className="flex items-center gap-1.5 pt-2">
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+            </div>
+          </div>
+        )}
+
         <div ref={bottomRef} />
       </div>
     </div>
