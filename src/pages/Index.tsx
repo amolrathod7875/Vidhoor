@@ -156,6 +156,8 @@ function ChatApp() {
           onSelectSession={setActiveId}
           onNewChat={handleNewChat}
           onLoginClick={() => setLoginOpen(true)}
+          onDeleteSession={handleDeleteSession}
+          onShareSession={handleShareSession}
           tempChat={tempChat}
         />
 
