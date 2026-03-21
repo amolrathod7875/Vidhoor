@@ -41,6 +41,7 @@ interface Props {
   onLoginClick: () => void;
   onDeleteSession: (id: string) => void;
   onShareSession: (id: string) => void;
+  onRenameSession: (id: string, newTitle: string) => void;
   tempChat: boolean;
 }
 
