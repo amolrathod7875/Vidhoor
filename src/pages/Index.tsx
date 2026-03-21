@@ -166,6 +166,7 @@ function ChatApp() {
           <ChatArea
             messages={activeSession?.messages ?? []}
             isTyping={isTyping}
+            onChipClick={handleSend}
           />
 
           {/* Input */}
