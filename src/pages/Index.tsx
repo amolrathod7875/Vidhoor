@@ -140,6 +140,12 @@ function ChatApp() {
     }
   };
 
+  const handleRenameSession = (id: string, newTitle: string) => {
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, title: newTitle } : s))
+    );
+  };
+
   // Filter out temp sessions from sidebar display
   const sidebarSessions = sessions.filter(
     (s) => !s.title.startsWith("⌛ ")
@@ -158,6 +164,7 @@ function ChatApp() {
           onLoginClick={() => setLoginOpen(true)}
           onDeleteSession={handleDeleteSession}
           onShareSession={handleShareSession}
+          onRenameSession={handleRenameSession}
           tempChat={tempChat}
         />
 

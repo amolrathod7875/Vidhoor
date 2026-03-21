@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect, KeyboardEvent } from "react";
 import {
   Plus,
   Sun,
@@ -9,6 +10,7 @@ import {
   MoreHorizontal,
   Trash2,
   Share2,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -39,6 +41,7 @@ interface Props {
   onLoginClick: () => void;
   onDeleteSession: (id: string) => void;
   onShareSession: (id: string) => void;
+  onRenameSession: (id: string, newTitle: string) => void;
   tempChat: boolean;
 }
 
@@ -50,12 +53,37 @@ export function VidhoorSidebar({
   onLoginClick,
   onDeleteSession,
   onShareSession,
+  onRenameSession,
   tempChat,
 }: Props) {
   const { theme, toggle } = useTheme();
   const { user, logout } = useAuth();
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const editRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingId) editRef.current?.focus();
+  }, [editingId]);
+
+  const startRename = (id: string, currentTitle: string) => {
+    setEditingId(id);
+    setEditValue(currentTitle);
+  };
+
+  const commitRename = () => {
+    if (editingId && editValue.trim()) {
+      onRenameSession(editingId, editValue.trim());
+    }
+    setEditingId(null);
+  };
+
+  const handleEditKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+    if (e.key === "Escape") setEditingId(null);
+  };
 
   const initials = user?.displayName
     ? user.displayName
@@ -113,6 +141,7 @@ export function VidhoorSidebar({
                 >
                   <button
                     onClick={() => onSelectSession(s.id)}
+                    onDoubleClick={() => !collapsed && startRename(s.id, s.title)}
                     className={cn(
                       "flex flex-1 items-center gap-2.5 px-3 py-2.5 text-left text-sm min-w-0",
                       collapsed && "justify-center px-2"
@@ -120,7 +149,19 @@ export function VidhoorSidebar({
                   >
                     <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
                     {!collapsed && (
-                      <span className="truncate">{s.title}</span>
+                      editingId === s.id ? (
+                        <input
+                          ref={editRef}
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          onBlur={commitRename}
+                          onKeyDown={handleEditKeyDown}
+                          className="flex-1 min-w-0 bg-transparent text-sm outline-none ring-1 ring-primary/40 rounded px-1 py-0.5"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <span className="truncate">{s.title}</span>
+                      )
                     )}
                   </button>
 
@@ -137,6 +178,13 @@ export function VidhoorSidebar({
                         side="right"
                         className="w-40 rounded-xl"
                       >
+                        <DropdownMenuItem
+                          onClick={() => startRename(s.id, s.title)}
+                          className="gap-2 rounded-lg text-sm"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          Rename
+                        </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={() => onShareSession(s.id)}
                           className="gap-2 rounded-lg text-sm"
