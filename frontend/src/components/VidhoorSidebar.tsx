@@ -7,10 +7,12 @@ import {
   MessageSquare,
   LogOut,
   Ghost,
-  MoreHorizontal,
+  MoreVertical,
   Trash2,
   Share2,
   Pencil,
+  Pin,
+  PinOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -42,6 +44,7 @@ interface Props {
   onDeleteSession: (id: string) => void;
   onShareSession: (id: string) => void;
   onRenameSession: (id: string, newTitle: string) => void;
+  onPinSession: (id: string) => void;
   tempChat: boolean;
 }
 
@@ -54,6 +57,7 @@ export function VidhoorSidebar({
   onDeleteSession,
   onShareSession,
   onRenameSession,
+  onPinSession,
   tempChat,
 }: Props) {
   const { theme, toggle } = useTheme();
@@ -160,48 +164,69 @@ export function VidhoorSidebar({
                           onClick={(e) => e.stopPropagation()}
                         />
                       ) : (
-                        <span className="truncate">{s.title}</span>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          {s.pinned && <Pin className="h-3 w-3 shrink-0 text-primary" />}
+                          <span className="truncate">{s.title}</span>
+                        </div>
                       )
                     )}
                   </button>
 
-                  {/* Context menu — visible on hover, hidden when collapsed */}
-                  {!collapsed && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button className="mr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg opacity-0 transition-opacity hover:bg-background/60 group-hover:opacity-100 focus-visible:opacity-100">
-                          <MoreHorizontal className="h-3.5 w-3.5" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent
-                        align="start"
-                        side="right"
-                        className="w-40 rounded-xl"
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        className={cn(
+                          "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-foreground/80 transition-colors hover:bg-background/70 hover:text-foreground focus-visible:text-foreground",
+                          collapsed ? "mr-0.5" : "mr-1.5"
+                        )}
                       >
-                        <DropdownMenuItem
-                          onClick={() => startRename(s.id, s.title)}
-                          className="gap-2 rounded-lg text-sm"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                          Rename
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => onShareSession(s.id)}
-                          className="gap-2 rounded-lg text-sm"
-                        >
-                          <Share2 className="h-3.5 w-3.5" />
-                          Share
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => onDeleteSession(s.id)}
-                          className="gap-2 rounded-lg text-sm text-destructive focus:text-destructive"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
+                        <MoreVertical className="h-4 w-4" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align={collapsed ? "end" : "start"}
+                      side="right"
+                      className="w-40 rounded-xl"
+                    >
+                      <DropdownMenuItem
+                        onSelect={() => startRename(s.id, s.title)}
+                        className="gap-2 rounded-lg text-sm"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onSelect={() => onDeleteSession(s.id)}
+                        className="gap-2 rounded-lg text-sm text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Delete
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onSelect={() => onShareSession(s.id)}
+                        className="gap-2 rounded-lg text-sm"
+                      >
+                        <Share2 className="h-3.5 w-3.5" />
+                        Share
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onSelect={() => onPinSession(s.id)}
+                        className="gap-2 rounded-lg text-sm"
+                      >
+                        {s.pinned ? (
+                          <>
+                            <PinOff className="h-3.5 w-3.5" />
+                            Unpin
+                          </>
+                        ) : (
+                          <>
+                            <Pin className="h-3.5 w-3.5" />
+                            Pin
+                          </>
+                        )}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               ))}
             </div>

@@ -1,0 +1,11 @@
+# Oracle Database Wallet Files
+wallet/
+*.zip
+*.sso
+*.p12
+
+# Environment Variables (CRITICAL)
+.env
+chroma/
+__pycache__/
+data/

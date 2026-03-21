@@ -8,4 +8,5 @@ export interface ChatSession {
   id: string;
   title: string;
   messages: Message[];
+  pinned?: boolean;
 }

@@ -1,7 +1,8 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { Message } from "@/types/chat";
-import { Scale } from "lucide-react";
+import { Scale, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 const PROMPT_CHIPS = [
   "Draft a bail application",
@@ -18,10 +19,22 @@ interface Props {
 
 export function ChatArea({ messages, isTyping, onChipClick }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
+
+  const handleCopy = async (id: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedId(id);
+      toast.success("Response copied");
+      setTimeout(() => setCopiedId((current) => (current === id ? null : current)), 1500);
+    } catch {
+      toast.error("Could not copy response");
+    }
+  };
 
   if (messages.length === 0 && !isTyping) {
     return (
@@ -79,6 +92,21 @@ export function ChatArea({ messages, isTyping, onChipClick }: Props) {
               )}
             >
               {msg.content}
+              {msg.role === "assistant" && (
+                <div className="mt-2 flex justify-end">
+                  <button
+                    onClick={() => handleCopy(msg.id, msg.content)}
+                    className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    {copiedId === msg.id ? (
+                      <Check className="h-3.5 w-3.5" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
+                    {copiedId === msg.id ? "Copied" : "Copy"}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ))}
