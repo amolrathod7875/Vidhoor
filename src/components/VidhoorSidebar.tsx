@@ -60,6 +60,30 @@ export function VidhoorSidebar({
   const { user, logout } = useAuth();
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const editRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingId) editRef.current?.focus();
+  }, [editingId]);
+
+  const startRename = (id: string, currentTitle: string) => {
+    setEditingId(id);
+    setEditValue(currentTitle);
+  };
+
+  const commitRename = () => {
+    if (editingId && editValue.trim()) {
+      onRenameSession(editingId, editValue.trim());
+    }
+    setEditingId(null);
+  };
+
+  const handleEditKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+    if (e.key === "Escape") setEditingId(null);
+  };
 
   const initials = user?.displayName
     ? user.displayName
