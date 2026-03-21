@@ -53,6 +53,7 @@ export function VidhoorSidebar({
   onLoginClick,
   onDeleteSession,
   onShareSession,
+  onRenameSession,
   tempChat,
 }: Props) {
   const { theme, toggle } = useTheme();
