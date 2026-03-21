@@ -141,6 +141,7 @@ export function VidhoorSidebar({
                 >
                   <button
                     onClick={() => onSelectSession(s.id)}
+                    onDoubleClick={() => !collapsed && startRename(s.id, s.title)}
                     className={cn(
                       "flex flex-1 items-center gap-2.5 px-3 py-2.5 text-left text-sm min-w-0",
                       collapsed && "justify-center px-2"
@@ -148,7 +149,19 @@ export function VidhoorSidebar({
                   >
                     <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
                     {!collapsed && (
-                      <span className="truncate">{s.title}</span>
+                      editingId === s.id ? (
+                        <input
+                          ref={editRef}
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          onBlur={commitRename}
+                          onKeyDown={handleEditKeyDown}
+                          className="flex-1 min-w-0 bg-transparent text-sm outline-none ring-1 ring-primary/40 rounded px-1 py-0.5"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <span className="truncate">{s.title}</span>
+                      )
                     )}
                   </button>
 
