@@ -175,6 +175,10 @@ export function VidhoorSidebar({
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
+                        type="button"
+                        aria-label={`Chat options for ${s.title}`}
+                        title="Chat options"
+                        onClick={(event) => event.stopPropagation()}
                         className={cn(
                           "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-foreground/80 transition-colors hover:bg-background/70 hover:text-foreground focus-visible:text-foreground",
                           collapsed ? "mr-0.5" : "mr-1.5"
@@ -196,7 +200,11 @@ export function VidhoorSidebar({
                         Rename
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        onSelect={() => onDeleteSession(s.id)}
+                        onSelect={() => {
+                          if (window.confirm("Delete this chat?")) {
+                            onDeleteSession(s.id);
+                          }
+                        }}
                         className="gap-2 rounded-lg text-sm text-destructive focus:text-destructive"
                       >
                         <Trash2 className="h-3.5 w-3.5" />

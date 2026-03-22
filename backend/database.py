@@ -127,9 +127,12 @@ class OracleChatHistoryRepository:
 		user_message: str,
 		assistant_message: str,
 		masked_entities: dict[str, str],
+		session_title: str | None = None,
 	) -> None:
 		"""Persist one user/assistant message turn in Oracle."""
-		session_title = user_message[:120]
+		resolved_title = (session_title or "").strip() or "New Chat"
+		if len(resolved_title) > 120:
+			resolved_title = resolved_title[:120]
 		masked_entities_json = json.dumps(masked_entities, ensure_ascii=False)
 
 		with self._connect() as connection:
@@ -153,7 +156,7 @@ class OracleChatHistoryRepository:
 					{
 						"session_id": session_id,
 						"user_id": user_id,
-						"title": session_title,
+						"title": resolved_title,
 					},
 				)
 

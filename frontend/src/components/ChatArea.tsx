@@ -3,6 +3,9 @@ import { Message } from "@/types/chat";
 import { Scale, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { useTheme } from "@/hooks/useTheme";
+import HorizontalLoadingBarDark from "@/components/ui/horizontal_loading_bar_dark";
+import HorizontalLoadingBarLight from "@/components/ui/horizontal_loading_bar_light";
 
 const PROMPT_CHIPS = [
   "Draft a bail application",
@@ -14,16 +17,23 @@ const PROMPT_CHIPS = [
 interface Props {
   messages: Message[];
   isTyping: boolean;
+  isHistoryLoading: boolean;
   onChipClick?: (text: string) => void;
 }
 
-export function ChatArea({ messages, isTyping, onChipClick }: Props) {
+export function ChatArea({
+  messages,
+  isTyping,
+  isHistoryLoading,
+  onChipClick,
+}: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const { theme } = useTheme();
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
+  }, [messages, isTyping, isHistoryLoading]);
 
   const handleCopy = async (id: string, content: string) => {
     try {
@@ -36,7 +46,7 @@ export function ChatArea({ messages, isTyping, onChipClick }: Props) {
     }
   };
 
-  if (messages.length === 0 && !isTyping) {
+  if (messages.length === 0 && !isTyping && !isHistoryLoading) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-8 px-8">
         <h1
@@ -68,6 +78,16 @@ export function ChatArea({ messages, isTyping, onChipClick }: Props) {
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto px-4 py-6">
+      {isHistoryLoading && (
+        <div className="w-full animate-fade-in-up pb-4">
+          {theme === "dark" ? (
+            <HorizontalLoadingBarDark />
+          ) : (
+            <HorizontalLoadingBarLight />
+          )}
+        </div>
+      )}
+
       <div className="mx-auto w-full max-w-3xl space-y-5">
         {messages.map((msg, i) => (
           <div
@@ -111,7 +131,7 @@ export function ChatArea({ messages, isTyping, onChipClick }: Props) {
           </div>
         ))}
 
-        {isTyping && (
+        {isTyping && !isHistoryLoading && (
           <div className="flex items-start gap-3 animate-fade-in-up">
             <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15">
               <Scale className="h-3.5 w-3.5 text-primary" />

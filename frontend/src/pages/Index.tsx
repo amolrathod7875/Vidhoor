@@ -52,20 +52,13 @@ interface HistoryMessageResponse {
   masked_entities: Record<string, string>;
 }
 
-const SAMPLE_SESSIONS: ChatSession[] = [
-  { id: "1", title: "Breach of Contract - Tata Motors", messages: [], pinned: false },
-  { id: "2", title: "BNS Section 480 Bail Application", messages: [], pinned: false },
-  { id: "3", title: "IPR Infringement - Pharma Patent", messages: [], pinned: false },
-  { id: "4", title: "Consumer Dispute - E-commerce", messages: [], pinned: false },
-];
-
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8001";
 
 let nextId = 100;
 
 function ChatApp() {
   const { user, logout } = useAuth();
-  const [sessions, setSessions] = useState<ChatSession[]>(SAMPLE_SESSIONS);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [guestRemaining, setGuestRemaining] = useState(5);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -202,7 +195,7 @@ function ChatApp() {
     if (!sid) {
       const newSession: ChatSession = {
         id: String(nextId++),
-        title: text.length > 40 ? text.slice(0, 40) + "…" : text,
+        title: "New Chat",
         messages: [],
         pinned: false,
       };
@@ -457,12 +450,22 @@ function ChatApp() {
             <div className="relative flex h-14 items-center px-3">
               <div className="z-10 flex items-center gap-2">
                 <SidebarTrigger />
+                <button
+                  onClick={handleNewChat}
+                  className="hidden text-sm font-medium text-foreground/75 transition-opacity hover:opacity-80 sm:inline"
+                >
+                  Vidhoor
+                </button>
               </div>
 
-              <div className="pointer-events-none absolute inset-x-20 text-center">
-                <h1 className="truncate text-base font-semibold text-foreground">
+              <div className="absolute inset-x-20 text-center">
+                <button
+                  type="button"
+                  onClick={handleNewChat}
+                  className="max-w-full truncate bg-transparent px-0 py-0 text-base font-semibold text-foreground outline-none transition-opacity hover:opacity-80"
+                >
                   {activeSession?.title || "New Chat"}
-                </h1>
+                </button>
               </div>
 
               <div className="z-10 ml-auto flex items-center gap-1">
@@ -603,7 +606,8 @@ function ChatApp() {
           {/* Chat area */}
           <ChatArea
             messages={activeSession?.messages ?? []}
-            isTyping={isTyping || loadingSessionId === activeId}
+            isTyping={isTyping}
+            isHistoryLoading={activeId !== null && loadingSessionId === activeId}
             onChipClick={handleSend}
           />
 

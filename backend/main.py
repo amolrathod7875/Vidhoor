@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Optional
 import logging
+import os
+import re
 from uuid import uuid4
 import uvicorn
 
@@ -71,13 +73,46 @@ _pii_vault: Optional[PIIVault] = None
 _chat_repo: Optional[OracleChatHistoryRepository] = None
 
 
+LEGAL_QUERY_KEYWORDS = {
+    "advocate",
+    "appeal",
+    "article",
+    "bail",
+    "bns",
+    "bnss",
+    "bsa",
+    "constitution",
+    "contract",
+    "court",
+    "crime",
+    "criminal",
+    "evidence",
+    "fir",
+    "high court",
+    "ipc",
+    "judge",
+    "judgment",
+    "jurisdiction",
+    "law",
+    "legal",
+    "litigation",
+    "offence",
+    "petition",
+    "punishment",
+    "section",
+    "supreme court",
+}
+
+
 def get_chroma_manager() -> ChromaManager:
     """Get or create singleton Chroma manager instance."""
     global _chroma_manager
     if _chroma_manager is None:
+        chroma_host = os.environ.get("CHROMA_HOST", "127.0.0.1")
+        chroma_port = int(os.environ.get("CHROMA_PORT", "8000"))
         _chroma_manager = ChromaManager(
-            host="localhost",
-            port=8000,
+            host=chroma_host,
+            port=chroma_port,
             preferred_embedding_model="all-MiniLM-L6-v2",
             fallback_embedding_model="all-MiniLM-L6-v2",
         )
@@ -124,6 +159,22 @@ def infer_act_filter(query: str) -> Optional[str]:
 
     return None
 
+
+def is_legal_query(query: str) -> bool:
+    """Heuristically classify whether a query is legal in nature."""
+    if not query or not query.strip():
+        return False
+
+    normalized = query.lower()
+
+    if any(keyword in normalized for keyword in LEGAL_QUERY_KEYWORDS):
+        return True
+
+    if re.search(r"\b(article|section)\s+\d+[a-z]?\b", normalized):
+        return True
+
+    return False
+
 # --- Dependency to verify Firebase Auth Token (Mocked for now) ---
 async def verify_token(authorization: str = Header(None)):
     if not authorization:
@@ -157,24 +208,27 @@ async def health_check():
 async def process_chat(request: ChatRequest, user: dict = Depends(verify_token)):
     try:
         pii_vault = get_pii_vault()
+        llm_engine = get_llm_engine()
         masked_message, pii_map = pii_vault.mask_text(request.message)
         session_id = request.session_id or f"session_{uuid4().hex}"
 
-        # Step 2: Vector Retrieval
-        chroma_manager = get_chroma_manager()
-        act_filter = infer_act_filter(masked_message)
-        retrieved_context = chroma_manager.retrieve_context(
-            query_string=masked_message,
-            filter_status="active",
-            filter_act=act_filter,
-        )
+        if is_legal_query(masked_message):
+            chroma_manager = get_chroma_manager()
+            act_filter = infer_act_filter(masked_message)
+            retrieved_context = chroma_manager.retrieve_context(
+                query_string=masked_message,
+                filter_status="active",
+                filter_act=act_filter,
+            )
 
-        # Step 3: LLM Generation
-        llm_engine = get_llm_engine()
-        ai_response_masked = llm_engine.generate_legal_response(
-            masked_query=masked_message,
-            retrieved_context_list=retrieved_context,
-        )
+            ai_response_masked = llm_engine.generate_legal_response(
+                masked_query=masked_message,
+                retrieved_context_list=retrieved_context,
+            )
+        else:
+            ai_response_masked = llm_engine.generate_general_response(
+                masked_query=masked_message,
+            )
         
         final_readable_response = pii_vault.unmask_text(ai_response_masked, pii_map)
         
@@ -182,12 +236,26 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
         if not request.is_temporary_chat and user and user.get("uid"):
             try:
                 chat_repo = get_chat_repo()
+                user_id = str(user["uid"])
+                existing_messages = chat_repo.get_session_messages(
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                is_first_turn = len(existing_messages) == 0
+                session_title: str | None = None
+                if is_first_turn:
+                    session_title = llm_engine.generate_session_title(
+                        user_message=request.message,
+                        assistant_message=final_readable_response,
+                    )
+
                 chat_repo.save_chat_turn(
-                    user_id=str(user["uid"]),
+                    user_id=user_id,
                     session_id=session_id,
                     user_message=request.message,
                     assistant_message=final_readable_response,
                     masked_entities=pii_map,
+                    session_title=session_title,
                 )
             except Exception as exc:
                 logger.exception("Failed to save chat history to Oracle: %s", exc)

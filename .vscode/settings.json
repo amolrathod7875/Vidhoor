@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^docker --version; docker info --format \"\\{\\{\\.ServerVersion\\}\\}\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "docker compose": true,
+        "&": true
+    },
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
+}

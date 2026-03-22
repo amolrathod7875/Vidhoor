@@ -7,6 +7,7 @@ using a Chroma HTTP server.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -167,27 +168,58 @@ class ChromaManager:
 			raise ValueError("query_string cannot be empty")
 
 		try:
-			where_filter: dict[str, Any]
-			if filter_act:
-				where_filter = {
-					"$and": [
-						{"status": {"$eq": filter_status}},
-						{"act": {"$eq": filter_act}},
-					]
-				}
-			else:
-				where_filter = {"status": {"$eq": filter_status}}
-
-			result = self.collection.query(
-				query_texts=[query_string],
-				n_results=5,
-				where=where_filter,
-				include=["documents", "metadatas", "distances"],
+			article_match = re.search(
+				r"\bArticle\s+([0-9]+[A-Z]?)\b", query_string, flags=re.IGNORECASE
+			)
+			section_match = re.search(
+				r"\bSection\s+([0-9]+[A-Z]?)\b", query_string, flags=re.IGNORECASE
 			)
 
-			# Chroma returns nested lists (one list per query).
-			documents = result.get("documents", [[]])
-			return documents[0] if documents and documents[0] else []
+			article_ref = article_match.group(1).upper() if article_match else None
+			section_ref = section_match.group(1).upper() if section_match else None
+
+			def combine_conditions(conditions: list[dict[str, Any]]) -> dict[str, Any]:
+				if len(conditions) == 1:
+					return conditions[0]
+				return {"$and": conditions}
+
+			base_conditions: list[dict[str, Any]] = [{"status": {"$eq": filter_status}}]
+			if filter_act:
+				base_conditions.append({"act": {"$eq": filter_act}})
+
+			search_filters: list[dict[str, Any]] = []
+
+			if article_ref:
+				search_filters.append(
+					combine_conditions(base_conditions + [{"article": {"$eq": article_ref}}])
+				)
+			if section_ref:
+				search_filters.append(
+					combine_conditions(base_conditions + [{"section": {"$eq": section_ref}}])
+				)
+
+			search_filters.append(combine_conditions(base_conditions))
+			search_filters.append({"status": {"$eq": filter_status}})
+
+			seen_filters: set[str] = set()
+			for where_filter in search_filters:
+				filter_key = str(where_filter)
+				if filter_key in seen_filters:
+					continue
+				seen_filters.add(filter_key)
+
+				result = self.collection.query(
+					query_texts=[query_string],
+					n_results=8,
+					where=where_filter,
+					include=["documents", "metadatas", "distances"],
+				)
+
+				documents = result.get("documents", [[]])
+				if documents and documents[0]:
+					return documents[0]
+
+			return []
 		except ChromaError as exc:
 			logger.exception("Chroma retrieval error")
 			raise RuntimeError("Failed to retrieve legal context from Chroma") from exc

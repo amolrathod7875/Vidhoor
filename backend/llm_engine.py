@@ -98,6 +98,48 @@ class LLMEngine:
 
 		self.chain = self.prompt | self.llm | StrOutputParser()
 
+		self.general_prompt = ChatPromptTemplate.from_messages(
+			[
+				(
+					"system",
+					(
+						"You are Vidhoor, a helpful AI assistant. "
+						"Answer clearly and concisely. "
+						"If the user asks legal questions, suggest sharing jurisdiction and specific law details for better accuracy."
+					),
+				),
+				(
+					"human",
+					"User Query:\n{query}\n\nProvide a direct and useful response.",
+				),
+			]
+		)
+
+		self.general_chain = self.general_prompt | self.llm | StrOutputParser()
+
+		self.title_prompt = ChatPromptTemplate.from_messages(
+			[
+				(
+					"system",
+					(
+						"You create short conversation titles. "
+						"Return only a concise title between 3 and 7 words. "
+						"Do not use quotes, emojis, or trailing punctuation."
+					),
+				),
+				(
+					"human",
+					(
+						"User message:\n{user_message}\n\n"
+						"Assistant response:\n{assistant_message}\n\n"
+						"Create a title summarizing the conversation topic."
+					),
+				),
+			]
+		)
+
+		self.title_chain = self.title_prompt | self.llm | StrOutputParser()
+
 	@staticmethod
 	def _build_model_candidates(primary_model: str) -> list[str]:
 		"""Build a unique list of model aliases to try in order."""
@@ -124,6 +166,8 @@ class LLMEngine:
 		"""Switch active model and rebuild runnable chain."""
 		self.llm = self._create_llm(model_name)
 		self.chain = self.prompt | self.llm | StrOutputParser()
+		self.general_chain = self.general_prompt | self.llm | StrOutputParser()
+		self.title_chain = self.title_prompt | self.llm | StrOutputParser()
 		self._active_model = model_name
 
 	@staticmethod
@@ -191,3 +235,70 @@ class LLMEngine:
 
 		logger.exception("All configured Cerebras model aliases failed")
 		raise RuntimeError("Failed to generate legal response") from last_error
+
+	def generate_general_response(self, masked_query: str) -> str:
+		"""Generate a general-purpose response without retrieval context."""
+		if not masked_query or not masked_query.strip():
+			raise ValueError("masked_query cannot be empty")
+
+		last_error: Exception | None = None
+		for model_name in self._model_candidates:
+			if model_name != self._active_model:
+				try:
+					self._switch_model(model_name)
+				except Exception as exc:
+					last_error = exc
+					continue
+
+			try:
+				return self.general_chain.invoke({"query": masked_query})
+			except Exception as exc:
+				last_error = exc
+				error_text = str(exc).lower()
+				if "model_not_found" in error_text or "does not exist" in error_text:
+					logger.warning("Model '%s' unavailable, trying fallback", model_name)
+					continue
+				logger.exception("Cerebras generation failed for general response")
+				raise RuntimeError("Failed to generate general response") from exc
+
+		logger.exception("All configured Cerebras model aliases failed")
+		raise RuntimeError("Failed to generate general response") from last_error
+
+	def generate_session_title(self, user_message: str, assistant_message: str) -> str:
+		"""Generate a concise session title from the first user/assistant turn."""
+		seed_title = " ".join((user_message or "").split())[:80].strip()
+		if not seed_title:
+			seed_title = "New Chat"
+
+		last_error: Exception | None = None
+		for model_name in self._model_candidates:
+			if model_name != self._active_model:
+				try:
+					self._switch_model(model_name)
+				except Exception as exc:
+					last_error = exc
+					continue
+
+			try:
+				raw = self.title_chain.invoke(
+					{
+						"user_message": user_message,
+						"assistant_message": assistant_message,
+					}
+				)
+				title = " ".join(str(raw).split()).strip(" \t\n\r\"'`-:,.!?")
+				if not title:
+					return seed_title
+				return title[:120]
+			except Exception as exc:
+				last_error = exc
+				error_text = str(exc).lower()
+				if "model_not_found" in error_text or "does not exist" in error_text:
+					logger.warning("Model '%s' unavailable, trying fallback", model_name)
+					continue
+				logger.warning("Failed to generate session title, falling back", exc_info=True)
+				break
+
+		if last_error:
+			logger.info("Using fallback title because model invocation failed: %s", last_error)
+		return seed_title
