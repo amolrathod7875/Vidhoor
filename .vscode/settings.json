@@ -5,7 +5,9 @@
             "matchCommandLine": true
         },
         "docker compose": true,
-        "&": true
+        "&": true,
+        "C:/Users/amolr/anaconda3/Scripts/conda.exe": true,
+        "netstat": true
     },
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda"

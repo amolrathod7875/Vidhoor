@@ -7,7 +7,7 @@ import { ChatInput } from "@/components/ChatInput";
 import { LoginModal } from "@/components/LoginModal";
 import { ThemeProvider } from "@/hooks/useTheme";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
-import { ChatSession, Message } from "@/types/chat";
+import { ChatSession, Message, Citation } from "@/types/chat";
 import {
   Ghost,
   ShieldAlert,
@@ -35,6 +35,8 @@ interface ChatApiResponse {
   response: string;
   session_id: string;
   masked_entities: Record<string, unknown>;
+  citations?: Citation[];
+  overall_confidence?: number | null;
 }
 
 interface HistorySessionResponse {
@@ -176,8 +178,19 @@ function ChatApp() {
   );
 
   const addMessage = useCallback(
-    (role: Message["role"], content: string, sessionId: string) => {
-      const msg: Message = { id: String(nextId++), role, content };
+    (
+      role: Message["role"],
+      content: string,
+      sessionId: string,
+      options?: Pick<Message, "citations" | "overall_confidence">
+    ) => {
+      const msg: Message = {
+        id: String(nextId++),
+        role,
+        content,
+        citations: options?.citations,
+        overall_confidence: options?.overall_confidence,
+      };
       setSessions((prev) =>
         prev.map((s) =>
           s.id === sessionId
@@ -262,7 +275,10 @@ function ChatApp() {
       if (user && !tempChat) {
         loadedHistorySessionIds.current.add(sid);
       }
-      addMessage("assistant", data.response, sid);
+      addMessage("assistant", data.response, sid, {
+        citations: data.citations ?? [],
+        overall_confidence: data.overall_confidence ?? null,
+      });
     } catch (error) {
       console.error(error);
       addMessage(

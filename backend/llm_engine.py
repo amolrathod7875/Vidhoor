@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -81,7 +82,8 @@ class LLMEngine:
 					(
 						"You are Vidhoor, an expert Indian legal AI. "
 						"You must ONLY answer using the provided legal context. "
-						"If the context does not contain the answer, state that you do not know. "
+						"If the context does not contain the answer, clearly say the context is insufficient. "
+						"If a specific section/article is requested, do not infer from nearby text unless that exact section/article appears in context. "
 						"Do not hallucinate."
 					),
 				),
@@ -90,7 +92,23 @@ class LLMEngine:
 					(
 						"Legal Context:\n{context}\n\n"
 						"Masked User Query:\n{query}\n\n"
-						"Answer in clear, concise legal language grounded only in the context."
+						"Answer in professional legal language grounded only in the context. "
+						"Keep the response factual and avoid assumptions beyond the cited text. "
+						"Return markdown using this structure exactly and do not add a summary section:\n"
+						"## <Act Name> Section <Number>: Detailed Legal Explanation\n\n"
+						"### 1) What the law states\n"
+						"- Bullet points only\n\n"
+						"### 2) Essential legal ingredients\n"
+						"- Bullet points only\n\n"
+						"### 3) Punishment or legal consequences\n"
+						"- Bullet points only\n\n"
+						"### 4) Exceptions, provisos, and defences\n"
+						"- Bullet points only\n\n"
+						"### 5) Practical application\n"
+						"- Bullet points only\n\n"
+						"### 6) Limits and uncertainty\n"
+						"- Bullet points only\n\n"
+						"Do not write plain paragraphs under any ### subheading."
 					),
 				),
 			]
@@ -180,6 +198,61 @@ class LLMEngine:
 		if env_path.exists():
 			load_dotenv(dotenv_path=env_path, override=False)
 
+	@staticmethod
+	def _enforce_subheading_bullets(markdown_text: str) -> str:
+		"""Ensure markdown content under ### subheadings is formatted as bullet points."""
+		if not markdown_text or not markdown_text.strip():
+			return markdown_text
+
+		lines = markdown_text.splitlines()
+		normalized_lines: list[str] = []
+		inside_level3 = False
+
+		for line in lines:
+			stripped = line.strip()
+
+			if re.match(r"^(\d+[\).]|[ivxlcdm]+\))\s+", stripped, flags=re.IGNORECASE):
+				stripped = f"### {stripped}"
+				line = stripped
+
+			if stripped.startswith("### "):
+				inside_level3 = True
+				normalized_lines.append(line)
+				continue
+
+			if stripped.startswith("## ") or stripped.startswith("# "):
+				inside_level3 = False
+				normalized_lines.append(line)
+				continue
+
+			if not inside_level3:
+				normalized_lines.append(line)
+				continue
+
+			if not stripped:
+				normalized_lines.append(line)
+				continue
+
+			if stripped.startswith("- "):
+				normalized_lines.append(line)
+				continue
+
+			if stripped.startswith("* "):
+				normalized_lines.append(f"- {stripped[2:].strip()}")
+				continue
+
+			if stripped.startswith((">", "```", "|")):
+				normalized_lines.append(line)
+				continue
+
+			if re.match(r"^\d+\.\s", stripped):
+				normalized_lines.append(line)
+				continue
+
+			normalized_lines.append(f"- {stripped}")
+
+		return "\n".join(normalized_lines)
+
 	def generate_legal_response(
 		self,
 		masked_query: str,
@@ -218,12 +291,13 @@ class LLMEngine:
 					continue
 
 			try:
-				return self.chain.invoke(
+				raw_response = self.chain.invoke(
 					{
 						"query": masked_query,
 						"context": context_text,
 					}
 				)
+				return self._enforce_subheading_bullets(str(raw_response))
 			except Exception as exc:
 				last_error = exc
 				error_text = str(exc).lower()

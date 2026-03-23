@@ -101,10 +101,10 @@ def infer_act_name(file_path: Path, explicit_act: str | None) -> str:
     name = file_path.stem.lower()
     if "constitution" in name:
         return "Constitution of India"
-    if "bns" in name:
-        return "Bharatiya Nyaya Sanhita"
     if "bnss" in name:
         return "Bharatiya Nagarik Suraksha Sanhita"
+    if "bns" in name:
+        return "Bharatiya Nyaya Sanhita"
     if "bsa" in name:
         return "Bharatiya Sakshya Adhiniyam"
 

@@ -19,6 +19,56 @@ from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunct
 logger = logging.getLogger(__name__)
 
 
+def _distance_to_confidence(distance: Any) -> float:
+	"""Convert retrieval distance to a normalized confidence score [0, 1]."""
+	try:
+		distance_value = float(distance)
+	except (TypeError, ValueError):
+		return 0.5
+
+	# Chroma distance is typically smaller-is-better. This keeps behavior stable
+	# across cosine/L2-like ranges and clamps to 0..1.
+	confidence = 1.0 - (abs(distance_value) / 2.0)
+	return max(0.0, min(1.0, confidence))
+
+
+def _clean_snippet(text: str) -> str:
+	"""Normalize noisy OCR/gazette text while preserving full excerpt content."""
+	normalized = re.sub(r"[_]{3,}|[-]{3,}", " ", text or "")
+	normalized = re.sub(r"\s+", " ", normalized).strip()
+	return normalized
+
+
+def _contains_reference(text: str, key: str, value: str) -> bool:
+	"""Check whether text contains exact Article/Section reference."""
+	if not text or not value:
+		return False
+	pattern = rf"\b{re.escape(key)}\s+{re.escape(value)}\b"
+	return bool(re.search(pattern, text, flags=re.IGNORECASE))
+
+
+def _source_matches_act_filter(source: str, act_filter: str | None) -> bool:
+	"""Best-effort sanity guard when historic metadata has mislabeled acts."""
+	if not act_filter:
+		return True
+
+	normalized_source = (source or "").lower()
+	if not normalized_source:
+		return True
+
+	if act_filter == "Bharatiya Nyaya Sanhita":
+		return "bnss" not in normalized_source
+
+	if act_filter == "Bharatiya Nagarik Suraksha Sanhita":
+		if "bnss" in normalized_source:
+			return True
+		# If filename has bns but not bnss, treat it as BNS and reject.
+		if "bns" in normalized_source:
+			return False
+
+	return True
+
+
 class ChromaManager:
 	"""Manage Chroma collection lifecycle, ingestion, and context retrieval."""
 
@@ -168,61 +218,152 @@ class ChromaManager:
 			raise ValueError("query_string cannot be empty")
 
 		try:
-			article_match = re.search(
-				r"\bArticle\s+([0-9]+[A-Z]?)\b", query_string, flags=re.IGNORECASE
+			retrieval = self.retrieve_context_with_metadata(
+				query_string=query_string,
+				filter_status=filter_status,
+				filter_act=filter_act,
 			)
-			section_match = re.search(
-				r"\bSection\s+([0-9]+[A-Z]?)\b", query_string, flags=re.IGNORECASE
-			)
-
-			article_ref = article_match.group(1).upper() if article_match else None
-			section_ref = section_match.group(1).upper() if section_match else None
-
-			def combine_conditions(conditions: list[dict[str, Any]]) -> dict[str, Any]:
-				if len(conditions) == 1:
-					return conditions[0]
-				return {"$and": conditions}
-
-			base_conditions: list[dict[str, Any]] = [{"status": {"$eq": filter_status}}]
-			if filter_act:
-				base_conditions.append({"act": {"$eq": filter_act}})
-
-			search_filters: list[dict[str, Any]] = []
-
-			if article_ref:
-				search_filters.append(
-					combine_conditions(base_conditions + [{"article": {"$eq": article_ref}}])
-				)
-			if section_ref:
-				search_filters.append(
-					combine_conditions(base_conditions + [{"section": {"$eq": section_ref}}])
-				)
-
-			search_filters.append(combine_conditions(base_conditions))
-			search_filters.append({"status": {"$eq": filter_status}})
-
-			seen_filters: set[str] = set()
-			for where_filter in search_filters:
-				filter_key = str(where_filter)
-				if filter_key in seen_filters:
-					continue
-				seen_filters.add(filter_key)
-
-				result = self.collection.query(
-					query_texts=[query_string],
-					n_results=8,
-					where=where_filter,
-					include=["documents", "metadatas", "distances"],
-				)
-
-				documents = result.get("documents", [[]])
-				if documents and documents[0]:
-					return documents[0]
-
-			return []
+			return retrieval["documents"]
 		except ChromaError as exc:
 			logger.exception("Chroma retrieval error")
 			raise RuntimeError("Failed to retrieve legal context from Chroma") from exc
 		except Exception as exc:
 			logger.exception("Unexpected retrieval error")
 			raise RuntimeError("Unexpected failure during Chroma retrieval") from exc
+
+	def retrieve_context_with_metadata(
+		self,
+		query_string: str,
+		filter_status: str = "active",
+		filter_act: str | None = None,
+	) -> dict[str, list[Any]]:
+		"""Retrieve legal chunks with citation metadata and confidence signals."""
+		if not query_string or not query_string.strip():
+			raise ValueError("query_string cannot be empty")
+
+		article_match = re.search(
+			r"\bArticle\s+([0-9]+[A-Z]?)\b", query_string, flags=re.IGNORECASE
+		)
+		section_match = re.search(
+			r"\bSection\s+([0-9]+[A-Z]?)\b", query_string, flags=re.IGNORECASE
+		)
+
+		article_ref = article_match.group(1).upper() if article_match else None
+		section_ref = section_match.group(1).upper() if section_match else None
+
+		def combine_conditions(conditions: list[dict[str, Any]]) -> dict[str, Any]:
+			if len(conditions) == 1:
+				return conditions[0]
+			return {"$and": conditions}
+
+		base_conditions: list[dict[str, Any]] = [{"status": {"$eq": filter_status}}]
+		if filter_act:
+			base_conditions.append({"act": {"$eq": filter_act}})
+
+		search_filters: list[dict[str, Any]] = []
+
+		if article_ref:
+			search_filters.append(
+				combine_conditions(base_conditions + [{"article": {"$eq": article_ref}}])
+			)
+		if section_ref:
+			search_filters.append(
+				combine_conditions(base_conditions + [{"section": {"$eq": section_ref}}])
+			)
+
+		search_filters.append(combine_conditions(base_conditions))
+		search_filters.append({"status": {"$eq": filter_status}})
+
+		seen_filters: set[str] = set()
+		for where_filter in search_filters:
+			filter_key = str(where_filter)
+			if filter_key in seen_filters:
+				continue
+			seen_filters.add(filter_key)
+
+			result = self.collection.query(
+				query_texts=[query_string],
+				n_results=8,
+				where=where_filter,
+				include=["documents", "metadatas", "distances"],
+			)
+
+			documents = result.get("documents", [[]])
+			metadatas = result.get("metadatas", [[]])
+			distances = result.get("distances", [[]])
+
+			if not documents or not documents[0]:
+				continue
+
+			doc_list = documents[0]
+			meta_list = metadatas[0] if metadatas else []
+			distance_list = distances[0] if distances else []
+
+			citations: list[dict[str, Any]] = []
+			seen_snippets: set[str] = set()
+			minimum_confidence = 0.5 if (article_ref or section_ref) else 0.55
+			fallback_candidates: list[dict[str, Any]] = []
+
+			for index, doc_text in enumerate(doc_list):
+				metadata = meta_list[index] if index < len(meta_list) else {}
+				distance = distance_list[index] if index < len(distance_list) else None
+				confidence = _distance_to_confidence(distance)
+				if confidence < minimum_confidence:
+					continue
+
+				source_name = str(metadata.get("source") or "unknown")
+				if not _source_matches_act_filter(source_name, filter_act):
+					continue
+
+				doc_text_value = str(doc_text)
+				snippet = _clean_snippet(doc_text_value)
+				snippet_key = snippet.lower()
+				if snippet_key in seen_snippets:
+					continue
+				seen_snippets.add(snippet_key)
+
+				title = str(metadata.get("act") or "").strip() or "Legal Source"
+				if title == "Legal Source" and source_name and source_name != "unknown":
+					title = source_name
+
+				last_updated = str(
+					metadata.get("last_updated")
+					or metadata.get("updated_at")
+					or metadata.get("effective_date")
+					or metadata.get("ingested_at")
+					or ""
+				)
+
+				citation = {
+					"doc_id": str(metadata.get("source") or metadata.get("act") or f"doc_{index + 1}"),
+					"title": title,
+					"source": source_name,
+					"source_url": str(metadata.get("source_url") or ""),
+					"section": str(metadata.get("section") or metadata.get("article") or ""),
+					"page": metadata.get("page"),
+					"snippet": snippet,
+					"confidence": confidence,
+					"last_updated": last_updated,
+				}
+				fallback_candidates.append(citation)
+				citations.append(citation)
+
+			if not citations:
+				fallback_candidates.sort(key=lambda item: item["confidence"], reverse=True)
+				if fallback_candidates:
+					citations = fallback_candidates[:2]
+				else:
+					continue
+
+			citations.sort(key=lambda item: item["confidence"], reverse=True)
+			selected = citations[:4]
+
+			return {
+				"documents": [item["snippet"] for item in selected],
+				"citations": selected,
+			}
+
+		return {
+			"documents": [],
+			"citations": [],
+		}

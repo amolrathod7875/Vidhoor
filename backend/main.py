@@ -41,10 +41,25 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     is_temporary_chat: bool = False
 
+
+class Citation(BaseModel):
+    doc_id: str
+    title: str
+    source: str
+    source_url: str = ""
+    section: str = ""
+    page: Optional[int] = None
+    snippet: str
+    confidence: float
+    last_updated: str = ""
+
+
 class ChatResponse(BaseModel):
     response: str
     session_id: str
     masked_entities: dict # We will send back the PII map just in case the frontend needs it
+    citations: list[Citation] = []
+    overall_confidence: Optional[float] = None
 
 
 class SessionSummary(BaseModel):
@@ -150,11 +165,11 @@ def infer_act_filter(query: str) -> Optional[str]:
 
     if "constitution" in normalized or "article" in normalized:
         return "Constitution of India"
-    if "bns" in normalized:
-        return "Bharatiya Nyaya Sanhita"
-    if "bnss" in normalized:
+    if re.search(r"\bbnss\b", normalized):
         return "Bharatiya Nagarik Suraksha Sanhita"
-    if "bsa" in normalized:
+    if re.search(r"\bbns\b", normalized):
+        return "Bharatiya Nyaya Sanhita"
+    if re.search(r"\bbsa\b", normalized):
         return "Bharatiya Sakshya Adhiniyam"
 
     return None
@@ -211,20 +226,79 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
         llm_engine = get_llm_engine()
         masked_message, pii_map = pii_vault.mask_text(request.message)
         session_id = request.session_id or f"session_{uuid4().hex}"
+        citations: list[Citation] = []
+        overall_confidence: Optional[float] = None
 
         if is_legal_query(masked_message):
-            chroma_manager = get_chroma_manager()
-            act_filter = infer_act_filter(masked_message)
-            retrieved_context = chroma_manager.retrieve_context(
-                query_string=masked_message,
-                filter_status="active",
-                filter_act=act_filter,
-            )
+            try:
+                chroma_manager = get_chroma_manager()
+                act_filter = infer_act_filter(masked_message)
+                retrieval = chroma_manager.retrieve_context_with_metadata(
+                    query_string=masked_message,
+                    filter_status="active",
+                    filter_act=act_filter,
+                )
+                retrieved_context = retrieval["documents"]
+                raw_citations = retrieval["citations"]
+                citations = [Citation(**item) for item in raw_citations]
+                if citations:
+                    overall_confidence = round(
+                        sum(item.confidence for item in citations) / len(citations),
+                        2,
+                    )
 
-            ai_response_masked = llm_engine.generate_legal_response(
-                masked_query=masked_message,
-                retrieved_context_list=retrieved_context,
-            )
+                requested_section_match = re.search(
+                    r"\bsection\s+([0-9]+[a-z]?)\b",
+                    masked_message,
+                    flags=re.IGNORECASE,
+                )
+                requested_article_match = re.search(
+                    r"\barticle\s+([0-9]+[a-z]?)\b",
+                    masked_message,
+                    flags=re.IGNORECASE,
+                )
+
+                requested_section = (
+                    requested_section_match.group(1).upper()
+                    if requested_section_match
+                    else None
+                )
+                requested_article = (
+                    requested_article_match.group(1).upper()
+                    if requested_article_match
+                    else None
+                )
+
+                has_direct_reference_match = True
+                if requested_section:
+                    has_direct_reference_match = any(
+                        (citation.section or "").upper() == requested_section
+                        for citation in citations
+                    )
+                elif requested_article:
+                    has_direct_reference_match = any(
+                        (citation.section or "").upper() == requested_article
+                        for citation in citations
+                    )
+
+                if not retrieved_context or not has_direct_reference_match:
+                    citations = []
+                    overall_confidence = None
+                    ai_response_masked = (
+                        "I couldn't find sufficiently reliable legal sources for this query. "
+                        "Please include the exact Act and section/article reference, then try again."
+                    )
+                else:
+                    ai_response_masked = llm_engine.generate_legal_response(
+                        masked_query=masked_message,
+                        retrieved_context_list=retrieved_context,
+                    )
+            except Exception as exc:
+                logger.exception("Legal retrieval failed: %s", exc)
+                ai_response_masked = (
+                    "I couldn't access the legal source index right now, so I can't provide a "
+                    "citation-grounded legal answer at the moment. Please try again shortly."
+                )
         else:
             ai_response_masked = llm_engine.generate_general_response(
                 masked_query=masked_message,
@@ -263,7 +337,9 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
         return ChatResponse(
             response=final_readable_response,
             session_id=session_id,
-            masked_entities=pii_map
+            masked_entities=pii_map,
+            citations=citations,
+            overall_confidence=overall_confidence,
         )
         
     except Exception as e:
