@@ -54,7 +54,11 @@ def split_into_chunks(text: str, chunk_size: int = 1200, overlap: int = 200) -> 
 
 def detect_article(chunk: str) -> str | None:
     """Best-effort extraction of Constitution article reference from chunk."""
-    match = re.search(r"\bArticle\s+([0-9]+[A-Z]?)\b", chunk, flags=re.IGNORECASE)
+    match = re.search(
+        r"\b(?:Article|Art\.?)\s*[-:]?\s*([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
+        chunk,
+        flags=re.IGNORECASE,
+    )
     if not match:
         return None
     return match.group(1).upper()
@@ -63,8 +67,9 @@ def detect_article(chunk: str) -> str | None:
 def build_metadata(chunks: list[str], status: str, source: str) -> list[dict[str, str]]:
     """Build metadata list for Chroma ingestion."""
     metadata: list[dict[str, str]] = []
+    last_article: str | None = None
     for chunk in chunks:
-        article = detect_article(chunk)
+        article = detect_article(chunk) or last_article
         item = {
             "act": "Constitution of India",
             "status": status,
@@ -72,6 +77,7 @@ def build_metadata(chunks: list[str], status: str, source: str) -> list[dict[str
         }
         if article:
             item["article"] = article
+            last_article = article
         metadata.append(item)
     return metadata
 

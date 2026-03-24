@@ -42,7 +42,7 @@ def _load_chat_cerebras() -> Any:
 class LLMEngine:
 	"""Generate legal responses from retrieved context using Cerebras LLM."""
 
-	def __init__(self, model: str = "llama3.1-70b") -> None:
+	def __init__(self, model: str = "llama3.1-8b") -> None:
 		"""Initialize ChatCerebras model.
 
 		Args:
@@ -163,10 +163,8 @@ class LLMEngine:
 		"""Build a unique list of model aliases to try in order."""
 		candidates = [
 			primary_model,
-			"llama-3.1-70b",
-			"llama3.1-70b",
-			"llama-3.1-8b",
 			"llama3.1-8b",
+			"gpt-oss-120b",
 		]
 
 		ordered_unique: list[str] = []

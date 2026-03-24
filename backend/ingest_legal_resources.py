@@ -111,17 +111,43 @@ def infer_act_name(file_path: Path, explicit_act: str | None) -> str:
     return file_path.stem.replace("_", " ").replace("-", " ").strip().title()
 
 
-def detect_reference(chunk: str) -> dict[str, str]:
-    """Extract best-effort article/section metadata from chunk text."""
+def detect_reference(
+    chunk: str,
+    default_section: str | None = None,
+    default_article: str | None = None,
+) -> dict[str, str]:
+    """Extract article/section metadata from chunk with fallback carry-forward."""
     metadata: dict[str, str] = {}
 
-    article_match = re.search(r"\bArticle\s+([0-9]+[A-Z]?)\b", chunk, flags=re.IGNORECASE)
-    if article_match:
-        metadata["article"] = article_match.group(1).upper()
+    article_matches = re.findall(
+        r"\b(?:Article|Art\.?)\s*[-:]?\s*([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
+        chunk,
+        flags=re.IGNORECASE,
+    )
+    if article_matches:
+        metadata["article"] = str(article_matches[-1]).upper()
+    elif default_article:
+        metadata["article"] = default_article
 
-    section_match = re.search(r"\bSection\s+([0-9]+[A-Z]?)\b", chunk, flags=re.IGNORECASE)
-    if section_match:
-        metadata["section"] = section_match.group(1).upper()
+    section_matches = re.findall(
+        r"\b(?:Section|Sec\.?)\s*[-:]?\s*([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
+        chunk,
+        flags=re.IGNORECASE,
+    )
+    section_value = str(section_matches[-1]).upper() if section_matches else None
+    if not section_value:
+        heading_matches = re.findall(
+            r"(?:^|\s)([0-9]{1,3}[A-Z]?)\s*[\.:]\s*(?:[A-Z][a-z]|[A-Z]{2,})",
+            chunk,
+            flags=re.IGNORECASE,
+        )
+        if heading_matches:
+            section_value = str(heading_matches[-1]).upper()
+
+    if section_value:
+        metadata["section"] = section_value
+    elif default_section:
+        metadata["section"] = default_section
 
     return metadata
 
@@ -134,6 +160,8 @@ def build_metadata(
 ) -> list[dict[str, str]]:
     """Build metadata aligned with chunks for Chroma ingestion."""
     all_metadata: list[dict[str, str]] = []
+    last_section: str | None = None
+    last_article: str | None = None
 
     for chunk in chunks:
         item: dict[str, str] = {
@@ -142,7 +170,18 @@ def build_metadata(
             "source": file_path.name,
             "resource_type": file_path.suffix.lower().lstrip("."),
         }
-        item.update(detect_reference(chunk))
+        reference = detect_reference(
+            chunk,
+            default_section=last_section,
+            default_article=last_article,
+        )
+        item.update(reference)
+
+        if reference.get("section"):
+            last_section = reference["section"]
+        if reference.get("article"):
+            last_article = reference["article"]
+
         all_metadata.append(item)
 
     return all_metadata

@@ -11,3 +11,4 @@ firebase-admin
 oracledb
 python-dotenv
 pypdf
+rank-bm25

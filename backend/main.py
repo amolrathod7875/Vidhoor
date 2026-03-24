@@ -118,6 +118,15 @@ LEGAL_QUERY_KEYWORDS = {
     "supreme court",
 }
 
+BAIL_QUERY_KEYWORDS = {
+    "bail",
+    "bailable",
+    "non-bailable",
+    "non bailable",
+    "custody",
+    "remand",
+}
+
 
 def get_chroma_manager() -> ChromaManager:
     """Get or create singleton Chroma manager instance."""
@@ -138,7 +147,7 @@ def get_llm_engine() -> LLMEngine:
     """Get or create singleton LLM engine instance."""
     global _llm_engine
     if _llm_engine is None:
-        _llm_engine = LLMEngine(model="llama3.1-70b")
+        _llm_engine = LLMEngine(model="llama3.1-8b")
     return _llm_engine
 
 
@@ -175,6 +184,34 @@ def infer_act_filter(query: str) -> Optional[str]:
     return None
 
 
+def infer_act_filters(query: str) -> list[str | None]:
+    """Infer one or more likely legal sources for retrieval coverage."""
+    normalized = query.lower()
+    filters: list[str | None] = []
+
+    if "constitution" in normalized or "article" in normalized:
+        filters.append("Constitution of India")
+    if re.search(r"\bbnss\b", normalized):
+        filters.append("Bharatiya Nagarik Suraksha Sanhita")
+    if re.search(r"\bbns\b", normalized):
+        filters.append("Bharatiya Nyaya Sanhita")
+    if re.search(r"\bbsa\b", normalized):
+        filters.append("Bharatiya Sakshya Adhiniyam")
+
+    if any(keyword in normalized for keyword in BAIL_QUERY_KEYWORDS):
+        if "Bharatiya Nagarik Suraksha Sanhita" not in filters:
+            filters.append("Bharatiya Nagarik Suraksha Sanhita")
+
+    if not filters:
+        return [None]
+
+    ordered_unique: list[str | None] = []
+    for item in filters:
+        if item not in ordered_unique:
+            ordered_unique.append(item)
+    return ordered_unique
+
+
 def is_legal_query(query: str) -> bool:
     """Heuristically classify whether a query is legal in nature."""
     if not query or not query.strip():
@@ -188,6 +225,120 @@ def is_legal_query(query: str) -> bool:
     if re.search(r"\b(article|section)\s+\d+[a-z]?\b", normalized):
         return True
 
+    return False
+
+
+def _normalize_reference(value: str | None) -> str:
+    """Normalize legal reference tokens (section/article) for tolerant matching."""
+    if not value:
+        return ""
+
+    normalized = re.sub(
+        r"\b(section|sec\.?|article|art\.?)\b",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"\s+", "", normalized).upper()
+    return normalized
+
+
+def _references_match(requested: str | None, candidate: str | None) -> bool:
+    """Match legal references while tolerating subsection-style variants."""
+    requested_norm = _normalize_reference(requested)
+    candidate_norm = _normalize_reference(candidate)
+
+    if not requested_norm or not candidate_norm:
+        return False
+
+    if requested_norm == candidate_norm:
+        return True
+
+    requested_base = re.match(r"^([0-9]+[A-Z]?)", requested_norm)
+    candidate_base = re.match(r"^([0-9]+[A-Z]?)", candidate_norm)
+
+    if requested_base and candidate_base:
+        return requested_base.group(1) == candidate_base.group(1)
+
+    return False
+
+
+def _extract_requested_references(query: str) -> list[str]:
+    """Extract all requested section/article references from query text."""
+    references: list[str] = []
+
+    section_refs = re.findall(
+        r"\b(?:section|sec\.?|u/s)\s*([0-9]+[a-z]?)\b",
+        query,
+        flags=re.IGNORECASE,
+    )
+    references.extend([str(item).upper() for item in section_refs])
+
+    plural_section_blocks = re.findall(
+        r"\bsections\s+([^.;\n]+)",
+        query,
+        flags=re.IGNORECASE,
+    )
+    for block in plural_section_blocks:
+        values = re.findall(r"\b([0-9]+[a-z]?)\b", block, flags=re.IGNORECASE)
+        references.extend([str(item).upper() for item in values])
+
+    article_refs = re.findall(
+        r"\b(?:article|art\.?)\s*([0-9]+[a-z]?)\b",
+        query,
+        flags=re.IGNORECASE,
+    )
+    references.extend([str(item).upper() for item in article_refs])
+
+    shorthand_refs = re.findall(
+        r"\b(?:bns|bnss|bsa|ipc|crpc)\s*[-/]?\s*([0-9]+[a-z]?)\b",
+        query,
+        flags=re.IGNORECASE,
+    )
+    references.extend([str(item).upper() for item in shorthand_refs])
+
+    ordered_unique: list[str] = []
+    for ref in references:
+        if ref not in ordered_unique:
+            ordered_unique.append(ref)
+    return ordered_unique
+
+
+def _normalize_text_token(value: str | None) -> str:
+    """Normalize text for robust keyword containment checks."""
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _act_aliases(act_name: str) -> list[str]:
+    """Return canonical aliases for known act names."""
+    normalized = _normalize_text_token(act_name)
+
+    if "bharatiyanyayasanhita" in normalized:
+        return ["bharatiyanyayasanhita", "bns"]
+    if "bharatiyanagariksurakshasanhita" in normalized:
+        return ["bharatiyanagariksurakshasanhita", "bnss"]
+    if "bharatiyasakshyaadhiniyam" in normalized:
+        return ["bharatiyasakshyaadhiniyam", "bsa"]
+    if "constitutionofindia" in normalized:
+        return ["constitutionofindia", "constitution"]
+
+    return [normalized] if normalized else []
+
+
+def _citation_matches_allowed_acts(citation: Citation, act_filters: list[str | None]) -> bool:
+    """Check whether citation appears to belong to one of requested act filters."""
+    effective_filters = [item for item in act_filters if item]
+    if not effective_filters:
+        return True
+
+    haystack = _normalize_text_token(
+        f"{citation.title} {citation.source} {citation.doc_id}"
+    )
+
+    for act_name in effective_filters:
+        for alias in _act_aliases(str(act_name)):
+            if alias and alias in haystack:
+                return True
     return False
 
 # --- Dependency to verify Firebase Auth Token (Mocked for now) ---
@@ -232,61 +383,89 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
         if is_legal_query(masked_message):
             try:
                 chroma_manager = get_chroma_manager()
-                act_filter = infer_act_filter(masked_message)
-                retrieval = chroma_manager.retrieve_context_with_metadata(
-                    query_string=masked_message,
-                    filter_status="active",
-                    filter_act=act_filter,
-                )
-                retrieved_context = retrieval["documents"]
-                raw_citations = retrieval["citations"]
+                act_filters = infer_act_filters(masked_message)
+
+                retrieved_context: list[str] = []
+                raw_citations: list[dict[str, Any]] = []
+                seen_context: set[str] = set()
+                seen_citations: set[tuple[str, str]] = set()
+
+                for act_filter in act_filters:
+                    retrieval = chroma_manager.retrieve_context_with_metadata(
+                        query_string=masked_message,
+                        filter_status="active",
+                        filter_act=act_filter,
+                    )
+
+                    for context_chunk in retrieval.get("documents", []):
+                        chunk_text = str(context_chunk or "")
+                        chunk_key = chunk_text.strip().lower()
+                        if not chunk_text or chunk_key in seen_context:
+                            continue
+                        seen_context.add(chunk_key)
+                        retrieved_context.append(chunk_text)
+
+                    for item in retrieval.get("citations", []):
+                        citation_doc_id = str(item.get("doc_id") or "")
+                        citation_snippet = str(item.get("snippet") or "")
+                        citation_key = (citation_doc_id, citation_snippet.strip().lower())
+                        if citation_key in seen_citations:
+                            continue
+                        seen_citations.add(citation_key)
+                        raw_citations.append(item)
+
                 citations = [Citation(**item) for item in raw_citations]
+                citations = [
+                    citation
+                    for citation in citations
+                    if _citation_matches_allowed_acts(citation, act_filters)
+                ]
+                citations.sort(key=lambda item: item.confidence, reverse=True)
+                citations = citations[:8]
+
+                requested_references = _extract_requested_references(masked_message)
+
+                has_direct_reference_match = True
+                if requested_references:
+                    has_direct_reference_match = all(
+                        any(
+                            _references_match(requested_reference, citation.section)
+                            for citation in citations
+                        )
+                        for requested_reference in requested_references
+                    )
+
+                if requested_references and citations:
+                    citations = [
+                        citation
+                        for citation in citations
+                        if any(
+                            _references_match(requested_reference, citation.section)
+                            for requested_reference in requested_references
+                        )
+                    ]
+
+                retrieved_context = [item.snippet for item in citations if item.snippet]
+
                 if citations:
                     overall_confidence = round(
                         sum(item.confidence for item in citations) / len(citations),
                         2,
                     )
 
-                requested_section_match = re.search(
-                    r"\bsection\s+([0-9]+[a-z]?)\b",
-                    masked_message,
-                    flags=re.IGNORECASE,
-                )
-                requested_article_match = re.search(
-                    r"\barticle\s+([0-9]+[a-z]?)\b",
-                    masked_message,
-                    flags=re.IGNORECASE,
-                )
-
-                requested_section = (
-                    requested_section_match.group(1).upper()
-                    if requested_section_match
-                    else None
-                )
-                requested_article = (
-                    requested_article_match.group(1).upper()
-                    if requested_article_match
-                    else None
-                )
-
-                has_direct_reference_match = True
-                if requested_section:
-                    has_direct_reference_match = any(
-                        (citation.section or "").upper() == requested_section
-                        for citation in citations
-                    )
-                elif requested_article:
-                    has_direct_reference_match = any(
-                        (citation.section or "").upper() == requested_article
-                        for citation in citations
-                    )
-
-                if not retrieved_context or not has_direct_reference_match:
+                if not retrieved_context:
                     citations = []
                     overall_confidence = None
                     ai_response_masked = (
                         "I couldn't find sufficiently reliable legal sources for this query. "
                         "Please include the exact Act and section/article reference, then try again."
+                    )
+                elif requested_references and not has_direct_reference_match:
+                    requested_text = ", ".join(requested_references)
+                    ai_response_masked = (
+                        f"I could not find exact matches for the requested reference(s): {requested_text}. "
+                        "I cannot provide a citation-grounded answer without exact source matches. "
+                        "Please verify the Act and section/article numbering, or refine the query."
                     )
                 else:
                     ai_response_masked = llm_engine.generate_legal_response(

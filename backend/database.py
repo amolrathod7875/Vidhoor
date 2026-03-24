@@ -10,6 +10,11 @@ from typing import Any
 
 import oracledb
 
+try:
+	oracledb.defaults.fetch_lobs = False
+except Exception:
+	pass
+
 
 class OracleChatHistoryRepository:
 	"""Repository for persisting and reading user chat history in Oracle DB."""
@@ -384,3 +389,217 @@ def _load_environment() -> None:
 	env_path = Path(__file__).resolve().parent / ".env"
 	if env_path.exists():
 		load_dotenv(dotenv_path=env_path, override=False)
+
+
+class OracleChunkRepository:
+	"""Repository for persistent legal chunks used by BM25 retrieval."""
+
+	def __init__(self) -> None:
+		_load_environment()
+		self._base_dir = Path(__file__).resolve().parent
+
+		self.user = os.environ.get("ORACLE_USER")
+		self.password = os.environ.get("ORACLE_PASSWORD")
+		self.dsn = os.environ.get("ORACLE_DSN")
+		self.config_dir = self._resolve_optional_path(os.environ.get("ORACLE_CONFIG_DIR"))
+		self.wallet_location = self._resolve_optional_path(os.environ.get("ORACLE_WALLET_LOCATION"))
+		self.wallet_password = os.environ.get("ORACLE_WALLET_PASSWORD")
+
+		if not self.user or not self.password or not self.dsn:
+			raise EnvironmentError(
+				"Missing Oracle DB configuration. Required: ORACLE_USER, ORACLE_PASSWORD, ORACLE_DSN"
+			)
+
+	def _resolve_optional_path(self, value: str | None) -> str | None:
+		"""Resolve relative env paths from backend directory."""
+		if not value:
+			return None
+
+		raw = Path(value.strip().strip('"').strip("'"))
+		if raw.is_absolute():
+			return str(raw)
+		return str((self._base_dir / raw).resolve())
+
+	def _connect(self) -> oracledb.Connection:
+		"""Create an Oracle connection with optional wallet configuration."""
+		connect_kwargs: dict[str, Any] = {
+			"user": self.user,
+			"password": self.password,
+			"dsn": self.dsn,
+		}
+
+		if self.config_dir:
+			connect_kwargs["config_dir"] = self.config_dir
+		if self.wallet_location:
+			connect_kwargs["wallet_location"] = self.wallet_location
+		if self.wallet_password:
+			connect_kwargs["wallet_password"] = self.wallet_password
+
+		return oracledb.connect(**connect_kwargs)
+
+	def initialize_schema(self) -> None:
+		"""Create persistent chunk table and supporting indexes when absent."""
+		ddl_statements = [
+			"""
+			CREATE TABLE vidhoor_legal_chunks (
+				chunk_id VARCHAR2(128) PRIMARY KEY,
+				chunk_text CLOB NOT NULL,
+				status VARCHAR2(64),
+				act VARCHAR2(256),
+				source VARCHAR2(512),
+				section_ref VARCHAR2(64),
+				metadata_json CLOB,
+				created_at TIMESTAMP DEFAULT SYSTIMESTAMP,
+				updated_at TIMESTAMP DEFAULT SYSTIMESTAMP
+			)
+			""",
+			"""
+			CREATE INDEX idx_vidhoor_legal_chunks_status
+			ON vidhoor_legal_chunks(status)
+			""",
+			"""
+			CREATE INDEX idx_vidhoor_legal_chunks_act
+			ON vidhoor_legal_chunks(act)
+			""",
+		]
+
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				for statement in ddl_statements:
+					try:
+						cursor.execute(statement)
+					except oracledb.DatabaseError as exc:
+						error_obj = exc.args[0]
+						if getattr(error_obj, "code", None) == 955:
+							continue
+						raise
+			connection.commit()
+
+	def upsert_chunks(self, chunks: list[dict[str, Any]]) -> int:
+		"""Insert or update legal chunks for BM25 reconstruction."""
+		if not chunks:
+			return 0
+
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				for chunk in chunks:
+					cursor.execute(
+						"""
+						MERGE INTO vidhoor_legal_chunks target
+						USING (
+							SELECT
+								:chunk_id AS chunk_id,
+								:chunk_text AS chunk_text,
+								:status AS status,
+								:act AS act,
+								:source AS source,
+								:section_ref AS section_ref,
+								:metadata_json AS metadata_json
+							FROM dual
+						) source
+						ON (target.chunk_id = source.chunk_id)
+						WHEN MATCHED THEN
+							UPDATE SET
+								target.chunk_text = source.chunk_text,
+								target.status = source.status,
+								target.act = source.act,
+								target.source = source.source,
+								target.section_ref = source.section_ref,
+								target.metadata_json = source.metadata_json,
+								target.updated_at = SYSTIMESTAMP
+						WHEN NOT MATCHED THEN
+							INSERT (
+								chunk_id,
+								chunk_text,
+								status,
+								act,
+								source,
+								section_ref,
+								metadata_json,
+								created_at,
+								updated_at
+							)
+							VALUES (
+								source.chunk_id,
+								source.chunk_text,
+								source.status,
+								source.act,
+								source.source,
+								source.section_ref,
+								source.metadata_json,
+								SYSTIMESTAMP,
+								SYSTIMESTAMP
+							)
+						""",
+						{
+							"chunk_id": str(chunk.get("chunk_id") or "").strip(),
+							"chunk_text": str(chunk.get("chunk_text") or ""),
+							"status": str(chunk.get("status") or "active"),
+							"act": str(chunk.get("act") or ""),
+							"source": str(chunk.get("source") or ""),
+							"section_ref": str(chunk.get("section_ref") or ""),
+							"metadata_json": str(chunk.get("metadata_json") or "{}"),
+						},
+					)
+			connection.commit()
+
+		return len(chunks)
+
+	def load_chunks(
+		self,
+		filter_status: str | None = "active",
+		filter_act: str | None = None,
+	) -> list[dict[str, Any]]:
+		"""Load chunks from Oracle for BM25 index warmup/rebuild."""
+		query = """
+			SELECT chunk_id, chunk_text, status, act, source, section_ref, metadata_json, updated_at
+			FROM vidhoor_legal_chunks
+			WHERE (:filter_status IS NULL OR status = :filter_status)
+			  AND (:filter_act IS NULL OR act = :filter_act)
+			ORDER BY updated_at DESC
+		"""
+
+		chunks: list[dict[str, Any]] = []
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					query,
+					{
+						"filter_status": filter_status,
+						"filter_act": filter_act,
+					},
+				)
+				rows = cursor.fetchall()
+
+				for (
+					chunk_id,
+					chunk_text,
+					status,
+					act,
+					source,
+					section_ref,
+					metadata_json,
+					updated_at,
+				) in rows:
+					meta_raw = str(metadata_json or "{}")
+					try:
+						meta = json.loads(meta_raw)
+					except Exception:
+						meta = {}
+
+					chunk_text_value = str(chunk_text or "")
+
+					chunks.append(
+						{
+							"chunk_id": str(chunk_id),
+							"chunk_text": chunk_text_value,
+							"status": str(status or ""),
+							"act": str(act or ""),
+							"source": str(source or ""),
+							"section_ref": str(section_ref or ""),
+							"metadata": meta,
+							"last_updated": _iso(updated_at),
+						}
+					)
+
+		return chunks
