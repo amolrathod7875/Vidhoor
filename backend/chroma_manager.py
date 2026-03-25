@@ -720,9 +720,18 @@ class ChromaManager:
 						"doc_id": str(metadata.get("source") or metadata.get("act") or f"doc_{index + 1}"),
 						"title": title,
 						"source": source_name,
-						"source_url": str(metadata.get("source_url") or ""),
+						"source_url": str(
+							metadata.get("source_url")
+							or metadata.get("doc_url")
+							or metadata.get("source_uri")
+							or ""
+						),
 						"section": section_value,
-						"page": metadata.get("page"),
+						"page": (
+							metadata.get("page")
+							or metadata.get("page_number")
+							or metadata.get("page_no")
+						),
 						"snippet": snippet,
 						"last_updated": last_updated,
 						"vector_score": vector_score,
@@ -878,9 +887,18 @@ class ChromaManager:
 					"doc_id": str(chunk.get("chunk_id") or source_name),
 					"title": title,
 					"source": source_name,
-					"source_url": str(metadata.get("source_url") or ""),
+					"source_url": str(
+						metadata.get("source_url")
+						or metadata.get("doc_url")
+						or metadata.get("source_uri")
+						or ""
+					),
 					"section": section_value,
-					"page": metadata.get("page"),
+					"page": (
+						metadata.get("page")
+						or metadata.get("page_number")
+						or metadata.get("page_no")
+					),
 					"snippet": snippet,
 					"last_updated": str(chunk.get("last_updated") or ""),
 					"vector_score": 0.0,

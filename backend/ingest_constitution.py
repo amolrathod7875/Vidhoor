@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 from chroma_manager import ChromaManager
 
@@ -64,7 +65,12 @@ def detect_article(chunk: str) -> str | None:
     return match.group(1).upper()
 
 
-def build_metadata(chunks: list[str], status: str, source: str) -> list[dict[str, str]]:
+def build_metadata(
+    chunks: list[str],
+    status: str,
+    source: str,
+    source_url: str = "",
+) -> list[dict[str, str]]:
     """Build metadata list for Chroma ingestion."""
     metadata: list[dict[str, str]] = []
     last_article: str | None = None
@@ -75,11 +81,25 @@ def build_metadata(chunks: list[str], status: str, source: str) -> list[dict[str
             "status": status,
             "source": source,
         }
+        if source_url:
+            item["source_url"] = source_url
         if article:
             item["article"] = article
             last_article = article
         metadata.append(item)
     return metadata
+
+
+def build_source_url(file_path: Path, source_base_url: str | None) -> str:
+    """Build source URL using optional cloud base URL."""
+    if not source_base_url:
+        return ""
+
+    normalized_base = source_base_url.strip().rstrip("/")
+    if not normalized_base:
+        return ""
+
+    return f"{normalized_base}/{quote(file_path.name)}"
 
 
 def ingest_constitution(
@@ -89,6 +109,7 @@ def ingest_constitution(
     overlap: int,
     chroma_host: str,
     chroma_port: int,
+    source_base_url: str | None,
 ) -> int:
     """Ingest Constitution text file into Chroma and return ingested chunk count."""
     text = read_text_file(input_path)
@@ -97,7 +118,12 @@ def ingest_constitution(
     if not chunks:
         raise ValueError("No chunks created. Check the input text file content.")
 
-    metadata = build_metadata(chunks=chunks, status=status, source=str(input_path.name))
+    metadata = build_metadata(
+        chunks=chunks,
+        status=status,
+        source=str(input_path.name),
+        source_url=build_source_url(input_path, source_base_url),
+    )
 
     manager = ChromaManager(host=chroma_host, port=chroma_port)
     return manager.ingest_law(text_chunks=chunks, metadata_list=metadata)
@@ -141,6 +167,11 @@ def parse_args() -> argparse.Namespace:
         default=8000,
         help="Chroma port (default: 8000)",
     )
+    parser.add_argument(
+        "--source-base-url",
+        default=None,
+        help="Optional public base URL for source files (e.g., https://cdn.example.com/legal)",
+    )
     return parser.parse_args()
 
 
@@ -155,6 +186,7 @@ def main() -> None:
         overlap=args.overlap,
         chroma_host=args.host,
         chroma_port=args.port,
+        source_base_url=args.source_base_url,
     )
 
     print(f"Successfully ingested {ingested} chunks into 'indian_law'.")

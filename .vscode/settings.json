@@ -7,7 +7,13 @@
         "docker compose": true,
         "&": true,
         "C:/Users/amolr/anaconda3/Scripts/conda.exe": true,
-        "netstat": true
+        "netstat": true,
+        "C:\\Users\\amolr\\anaconda3\\shell\\condabin\\conda-hook.ps1": true,
+        "conda": true,
+        "/^\\(C:\\\\Users\\\\amolr\\\\anaconda3\\\\shell\\\\condabin\\\\conda-hook\\.ps1\\) ; conda activate vidhoor311 ; Set-Location D:/vidhoor-legal-copilot/backend ; \\$env:PYTHONPATH='D:/vidhoor-legal-copilot/backend' ; python tmp_rag_check\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     },
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda"

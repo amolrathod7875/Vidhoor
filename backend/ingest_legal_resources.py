@@ -15,14 +15,16 @@ import argparse
 import re
 from importlib import import_module
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 from chroma_manager import ChromaManager
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
 
 
-def read_pdf_file(file_path: Path) -> str:
-    """Extract text from a PDF file using pypdf."""
+def read_pdf_pages(file_path: Path) -> list[tuple[int, str]]:
+    """Extract text from a PDF file as (page_number, page_text) tuples."""
     try:
         PdfReader = getattr(import_module("pypdf"), "PdfReader")
     except Exception as exc:
@@ -31,14 +33,14 @@ def read_pdf_file(file_path: Path) -> str:
         ) from exc
 
     reader = PdfReader(str(file_path))
-    page_texts: list[str] = []
+    page_texts: list[tuple[int, str]] = []
 
-    for page in reader.pages:
+    for page_index, page in enumerate(reader.pages, start=1):
         extracted = page.extract_text() or ""
         if extracted.strip():
-            page_texts.append(extracted)
+            page_texts.append((page_index, extracted))
 
-    return "\n".join(page_texts).strip()
+    return page_texts
 
 
 def read_text_file(file_path: Path) -> str:
@@ -47,6 +49,18 @@ def read_text_file(file_path: Path) -> str:
         return file_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return file_path.read_text(encoding="utf-8-sig")
+
+
+def build_source_url(file_path: Path, source_base_url: str | None) -> str:
+    """Build source URL for a file using optional cloud base URL."""
+    if not source_base_url:
+        return ""
+
+    normalized_base = source_base_url.strip().rstrip("/")
+    if not normalized_base:
+        return ""
+
+    return f"{normalized_base}/{quote(file_path.name)}"
 
 
 def read_resource(file_path: Path) -> str:
@@ -61,7 +75,8 @@ def read_resource(file_path: Path) -> str:
         )
 
     if extension == ".pdf":
-        return read_pdf_file(file_path)
+        pages = read_pdf_pages(file_path)
+        return "\n".join(text for _, text in pages).strip()
 
     return read_text_file(file_path)
 
@@ -157,19 +172,26 @@ def build_metadata(
     file_path: Path,
     act_name: str,
     status: str,
-) -> list[dict[str, str]]:
+    page_numbers: list[int] | None = None,
+    source_url: str = "",
+) -> list[dict[str, Any]]:
     """Build metadata aligned with chunks for Chroma ingestion."""
-    all_metadata: list[dict[str, str]] = []
+    all_metadata: list[dict[str, Any]] = []
     last_section: str | None = None
     last_article: str | None = None
 
-    for chunk in chunks:
-        item: dict[str, str] = {
+    for index, chunk in enumerate(chunks):
+        item: dict[str, Any] = {
             "act": act_name,
             "status": status,
             "source": file_path.name,
             "resource_type": file_path.suffix.lower().lstrip("."),
         }
+        if source_url:
+            item["source_url"] = source_url
+        if page_numbers and index < len(page_numbers):
+            item["page"] = int(page_numbers[index])
+
         reference = detect_reference(
             chunk,
             default_section=last_section,
@@ -223,10 +245,29 @@ def ingest_file(
     chunk_size: int,
     overlap: int,
     act_name: str | None,
+    source_base_url: str | None,
 ) -> int:
     """Ingest a single file and return chunk count."""
-    raw_text = read_resource(file_path)
-    chunks = split_into_chunks(text=raw_text, chunk_size=chunk_size, overlap=overlap)
+    source_url = build_source_url(file_path=file_path, source_base_url=source_base_url)
+    inferred_act_name = infer_act_name(file_path=file_path, explicit_act=act_name)
+
+    extension = file_path.suffix.lower()
+    chunks: list[str] = []
+    page_numbers: list[int] = []
+
+    if extension == ".pdf":
+        pages = read_pdf_pages(file_path)
+        for page_number, page_text in pages:
+            page_chunks = split_into_chunks(
+                text=page_text,
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+            chunks.extend(page_chunks)
+            page_numbers.extend([page_number] * len(page_chunks))
+    else:
+        raw_text = read_resource(file_path)
+        chunks = split_into_chunks(text=raw_text, chunk_size=chunk_size, overlap=overlap)
 
     if not chunks:
         raise ValueError(f"No chunks generated for file: {file_path}")
@@ -234,8 +275,10 @@ def ingest_file(
     metadata = build_metadata(
         chunks=chunks,
         file_path=file_path,
-        act_name=infer_act_name(file_path=file_path, explicit_act=act_name),
+        act_name=inferred_act_name,
         status=status,
+        page_numbers=page_numbers if page_numbers else None,
+        source_url=source_url,
     )
 
     return manager.ingest_law(text_chunks=chunks, metadata_list=metadata)
@@ -290,6 +333,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional override for 'act' metadata field for all files",
     )
+    parser.add_argument(
+        "--source-base-url",
+        default=None,
+        help="Optional public base URL for source files (e.g., https://cdn.example.com/legal)",
+    )
     return parser.parse_args()
 
 
@@ -316,6 +364,7 @@ def main() -> None:
             chunk_size=args.chunk_size,
             overlap=args.overlap,
             act_name=args.act,
+            source_base_url=args.source_base_url,
         )
         total_chunks += ingested_count
         results.append((str(file_path), ingested_count))

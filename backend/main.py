@@ -1,10 +1,13 @@
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Any, Optional
 import logging
 import os
 import re
+from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 import uvicorn
 
@@ -17,6 +20,12 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(title="Vidhoor Legal Copilot API")
+
+_BASE_DIR = Path(__file__).resolve().parent
+_LEGAL_DOCS_DIR = _BASE_DIR / "data"
+
+if _LEGAL_DOCS_DIR.exists() and _LEGAL_DOCS_DIR.is_dir():
+    app.mount("/legal", StaticFiles(directory=str(_LEGAL_DOCS_DIR)), name="legal")
 
 # VERY IMPORTANT: Configure CORS so your React frontend can talk to this backend
 app.add_middleware(
@@ -86,6 +95,7 @@ _chroma_manager: Optional[ChromaManager] = None
 _llm_engine: Optional[LLMEngine] = None
 _pii_vault: Optional[PIIVault] = None
 _chat_repo: Optional[OracleChatHistoryRepository] = None
+_bm25_refresh_counter: int = 0
 
 
 LEGAL_QUERY_KEYWORDS = {
@@ -341,6 +351,54 @@ def _citation_matches_allowed_acts(citation: Citation, act_filters: list[str | N
                 return True
     return False
 
+
+def _is_http_url(value: str | None) -> bool:
+    """Check whether a value is an HTTP(S) URL."""
+    text = str(value or "").strip().lower()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def _build_source_url_from_base(source_name: str) -> str:
+    """Build source URL from configured legal source base URL and source filename."""
+    configured_base_url = os.environ.get("LEGAL_SOURCE_BASE_URL", "").strip().rstrip("/")
+    fallback_base_url = os.environ.get("APP_PUBLIC_BASE_URL", "http://127.0.0.1:8001").strip().rstrip("/")
+    if fallback_base_url:
+        fallback_base_url = f"{fallback_base_url}/legal"
+
+    base_url = configured_base_url or fallback_base_url
+    if not base_url:
+        return ""
+
+    filename = str(source_name or "").strip()
+    if not filename:
+        return ""
+
+    return f"{base_url}/{quote(filename)}"
+
+
+def _append_page_anchor(url: str, page: int | None) -> str:
+    """Append PDF page anchor to URL when page is available."""
+    if not url:
+        return ""
+    if page is None:
+        return url
+    if "#" in url:
+        return url
+    return f"{url}#page={int(page)}"
+
+
+def _normalize_citation_links(citations: list[Citation]) -> list[Citation]:
+    """Ensure citations include usable source URLs with optional page deep links."""
+    normalized: list[Citation] = []
+    for citation in citations:
+        source_url = str(citation.source_url or "").strip()
+        if not _is_http_url(source_url):
+            source_url = _build_source_url_from_base(citation.source)
+
+        normalized_url = _append_page_anchor(source_url, citation.page)
+        normalized.append(citation.model_copy(update={"source_url": normalized_url}))
+    return normalized
+
 # --- Dependency to verify Firebase Auth Token (Mocked for now) ---
 async def verify_token(authorization: str = Header(None)):
     if not authorization:
@@ -373,6 +431,7 @@ async def health_check():
 @app.post("/api/chat", response_model=ChatResponse)
 async def process_chat(request: ChatRequest, user: dict = Depends(verify_token)):
     try:
+        global _bm25_refresh_counter
         pii_vault = get_pii_vault()
         llm_engine = get_llm_engine()
         masked_message, pii_map = pii_vault.mask_text(request.message)
@@ -383,6 +442,10 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
         if is_legal_query(masked_message):
             try:
                 chroma_manager = get_chroma_manager()
+                _bm25_refresh_counter += 1
+                if _bm25_refresh_counter % 5 == 0:
+                    chroma_manager.refresh_bm25_from_oracle(filter_status="active", filter_act=None)
+
                 act_filters = infer_act_filters(masked_message)
 
                 retrieved_context: list[str] = []
@@ -422,6 +485,7 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                 ]
                 citations.sort(key=lambda item: item.confidence, reverse=True)
                 citations = citations[:8]
+                citations = _normalize_citation_links(citations)
 
                 requested_references = _extract_requested_references(masked_message)
 

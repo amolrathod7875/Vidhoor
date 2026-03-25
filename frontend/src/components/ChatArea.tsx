@@ -238,6 +238,19 @@ export function ChatArea({
                   <span>Confidence: {formatConfidence(citation.confidence)}</span>
                   <span>•</span>
                   <span>Updated: {formatDate(citation.last_updated)}</span>
+                  {citation.source_url && (
+                    <>
+                      <span>•</span>
+                      <a
+                        href={citation.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline-offset-2 hover:underline"
+                      >
+                        Open source
+                      </a>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
