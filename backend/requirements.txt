@@ -12,3 +12,9 @@ oracledb
 python-dotenv
 pypdf
 rank-bm25
+requests
+transformers
+sentencepiece
+torch
+langdetect
+python-multipart

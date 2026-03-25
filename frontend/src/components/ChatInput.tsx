@@ -1,5 +1,5 @@
-import { useState, KeyboardEvent } from "react";
-import { ArrowUp } from "lucide-react";
+import { useRef, useState, KeyboardEvent, ChangeEvent } from "react";
+import { ArrowUp, Paperclip } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import TextareaAutosize from "react-textarea-autosize";
@@ -7,12 +7,21 @@ import { useAuth } from "@/hooks/useAuth";
 
 interface Props {
   onSend: (text: string) => void;
+  onUploadFile: (file: File) => void;
   disabled: boolean;
+  isUploading?: boolean;
   guestRemaining: number;
 }
 
-export function ChatInput({ onSend, disabled, guestRemaining }: Props) {
+export function ChatInput({
+  onSend,
+  onUploadFile,
+  disabled,
+  isUploading = false,
+  guestRemaining,
+}: Props) {
   const [text, setText] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { user } = useAuth();
 
   const isBlocked = !user && disabled;
@@ -29,6 +38,15 @@ export function ChatInput({ onSend, disabled, guestRemaining }: Props) {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const handleFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    if (!selected || isBlocked || isUploading) {
+      return;
+    }
+    onUploadFile(selected);
+    event.target.value = "";
   };
 
   return (
@@ -49,14 +67,34 @@ export function ChatInput({ onSend, disabled, guestRemaining }: Props) {
           isBlocked && "opacity-50"
         )}
       >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.png,.jpg,.jpeg,.webp,.tiff,.bmp"
+          className="hidden"
+          onChange={handleFileSelect}
+        />
+        <Button
+          size="icon"
+          type="button"
+          variant="ghost"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isBlocked || isUploading}
+          className="m-1.5 h-8 w-8 shrink-0 rounded-xl text-muted-foreground"
+          title="Upload FIR or scanned document"
+        >
+          <Paperclip className="h-4 w-4" />
+        </Button>
         <TextareaAutosize
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={isBlocked}
+          disabled={isBlocked || isUploading}
           placeholder={
             isBlocked
               ? "Sign in to continue…"
+              : isUploading
+                ? "Processing uploaded document…"
               : "Ask Vidhoor a legal question…"
           }
           minRows={1}
@@ -66,7 +104,7 @@ export function ChatInput({ onSend, disabled, guestRemaining }: Props) {
         <Button
           size="icon"
           onClick={handleSend}
-          disabled={isBlocked || !text.trim()}
+          disabled={isBlocked || isUploading || !text.trim()}
           className="m-1.5 h-8 w-8 shrink-0 rounded-xl transition-all active:scale-95"
         >
           <ArrowUp className="h-4 w-4" />

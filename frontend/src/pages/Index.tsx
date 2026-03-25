@@ -39,6 +39,19 @@ interface ChatApiResponse {
   overall_confidence?: number | null;
 }
 
+interface OCRAnalyzeApiResponse {
+  response: string;
+  summary: string;
+  extracted_pages: Array<{
+    page: number;
+    detected_language: string;
+    text_en: string;
+  }>;
+  citations?: Citation[];
+  overall_confidence?: number | null;
+  masked_entities: Record<string, unknown>;
+}
+
 interface HistorySessionResponse {
   session_id: string;
   title: string;
@@ -65,6 +78,7 @@ function ChatApp() {
   const [guestRemaining, setGuestRemaining] = useState(5);
   const [loginOpen, setLoginOpen] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [tempChat, setTempChat] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const prevTempChat = useRef(tempChat);
@@ -289,6 +303,75 @@ function ChatApp() {
       toast.error("Backend connection failed");
     } finally {
       setIsTyping(false);
+    }
+  };
+
+  const handleUploadFile = async (file: File) => {
+    let sid = activeId;
+
+    if (!sid) {
+      const newSession: ChatSession = {
+        id: String(nextId++),
+        title: "New Chat",
+        messages: [],
+        pinned: false,
+      };
+
+      if (tempChat) {
+        setSessions((prev) => [{ ...newSession, title: "⌛ " + newSession.title }, ...prev]);
+      } else {
+        setSessions((prev) => [newSession, ...prev]);
+      }
+
+      sid = newSession.id;
+      setActiveId(sid);
+    }
+
+    addMessage("user", `Uploaded document: ${file.name}`, sid);
+    setIsUploadingDocument(true);
+    setIsTyping(true);
+
+    try {
+      const token = user ? await user.getIdToken() : null;
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${API_BASE_URL}/api/fir/analyze`, {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Document analysis failed with status ${response.status}`);
+      }
+
+      const data = (await response.json()) as OCRAnalyzeApiResponse;
+      const assistantContent = [
+        "### OCR Summary",
+        data.summary,
+        "",
+        "### Legal Analysis",
+        data.response,
+      ].join("\n");
+
+      addMessage("assistant", assistantContent, sid, {
+        citations: data.citations ?? [],
+        overall_confidence: data.overall_confidence ?? null,
+      });
+    } catch (error) {
+      console.error(error);
+      addMessage(
+        "assistant",
+        "I could not process this document right now. Please try again with a clearer scan or a supported file type.",
+        sid
+      );
+      toast.error("Document processing failed");
+    } finally {
+      setIsTyping(false);
+      setIsUploadingDocument(false);
     }
   };
 
@@ -630,7 +713,9 @@ function ChatApp() {
           {/* Input */}
           <ChatInput
             onSend={handleSend}
+            onUploadFile={handleUploadFile}
             disabled={inputDisabled}
+            isUploading={isUploadingDocument}
             guestRemaining={guestRemaining}
           />
         </div>

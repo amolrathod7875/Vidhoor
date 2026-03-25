@@ -9,3 +9,7 @@ wallet/
 chroma/
 __pycache__/
 data/
+
+# OCR/API credential files (SECURITY - DO NOT COMMIT)
+vidhoor-239930f200a8.json
+*.json

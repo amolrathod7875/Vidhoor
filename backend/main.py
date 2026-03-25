@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from urllib.parse import quote
 from uuid import uuid4
 import uvicorn
@@ -15,6 +16,8 @@ from chroma_manager import ChromaManager
 from database import OracleChatHistoryRepository
 from llm_engine import LLMEngine
 from pii_vault import PIIVault
+from services.ocr_vision import VisionOCRService
+from services.translate_helsinki import translate_pages_to_english
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +74,21 @@ class ChatResponse(BaseModel):
     overall_confidence: Optional[float] = None
 
 
+class OCRPageResult(BaseModel):
+    page: int
+    detected_language: str
+    text_en: str
+
+
+class OCRAnalyzeResponse(BaseModel):
+    response: str
+    summary: str
+    extracted_pages: list[OCRPageResult]
+    citations: list[Citation] = []
+    overall_confidence: Optional[float] = None
+    masked_entities: dict
+
+
 class SessionSummary(BaseModel):
     session_id: str
     title: str
@@ -95,6 +113,7 @@ _chroma_manager: Optional[ChromaManager] = None
 _llm_engine: Optional[LLMEngine] = None
 _pii_vault: Optional[PIIVault] = None
 _chat_repo: Optional[OracleChatHistoryRepository] = None
+_ocr_service: Optional[VisionOCRService] = None
 _bm25_refresh_counter: int = 0
 
 
@@ -138,6 +157,66 @@ BAIL_QUERY_KEYWORDS = {
 }
 
 
+OFFENCE_GUIDANCE_RULES: list[dict[str, Any]] = [
+    {
+        "name": "Vehicle Theft",
+        "patterns": [
+            r"\bvehicle theft\b",
+            r"\btheft\b",
+            r"\bstolen\b",
+            r"\bmotorcycle\b",
+            r"\bcar\b",
+            r"\bचोरी\b",
+        ],
+        "act": "Bharatiya Nyaya Sanhita (BNS)",
+        "sections_hint": ["303", "303(2)"],
+        "guidance": [
+            "Preserve ownership proof such as RC, insurance documents, and purchase records.",
+            "Share engine/chassis number, vehicle registration, and last-seen location/time with investigating officer.",
+            "Request CCTV collection from parking, nearby shops, toll points, and traffic junctions quickly.",
+            "Keep FIR copy and written acknowledgement of submitted evidence for follow-up.",
+            "Inform insurer immediately and keep claim timeline aligned with FIR details.",
+        ],
+    },
+]
+
+
+def _detect_offence_rule(text: str) -> dict[str, Any] | None:
+    """Detect likely offence type from OCR/translated text."""
+    if not text:
+        return None
+
+    lowered = text.lower()
+    for rule in OFFENCE_GUIDANCE_RULES:
+        patterns = rule.get("patterns") or []
+        if any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns):
+            return rule
+
+    return None
+
+
+def _build_offence_guidance_markdown(text: str, references: list[str]) -> str:
+    """Build offence-first legal guidance when strict citation grounding is unavailable."""
+    rule = _detect_offence_rule(text)
+    if not rule:
+        return ""
+
+    section_candidates = references or list(rule.get("sections_hint") or [])
+    sections_text = ", ".join(section_candidates[:8]) if section_candidates else "Not clearly visible in OCR"
+    bullet_points = "\n".join(f"- {item}" for item in (rule.get("guidance") or []))
+
+    return (
+        "### Offence-Focused Legal Guidance\n"
+        f"- Likely offence type: {rule.get('name', 'Not clearly identified')}\n"
+        f"- Applicable Act: {rule.get('act', 'Not clearly identified')}\n"
+        f"- Relevant sections (detected/inferred): {sections_text}\n"
+        "- What authorities typically examine: ownership proof, possession trail, intent indicators, and recovery evidence.\n"
+        "- Immediate legal next steps:\n"
+        f"{bullet_points}\n"
+        "- Note: This is practical legal guidance; final section applicability must be confirmed from the latest official bare act and case facts."
+    )
+
+
 def get_chroma_manager() -> ChromaManager:
     """Get or create singleton Chroma manager instance."""
     global _chroma_manager
@@ -178,9 +257,24 @@ def get_chat_repo() -> OracleChatHistoryRepository:
     return _chat_repo
 
 
+def get_ocr_service() -> VisionOCRService:
+    """Get or create singleton OCR service instance."""
+    global _ocr_service
+    if _ocr_service is None:
+        _ocr_service = VisionOCRService()
+    return _ocr_service
+
+
 def infer_act_filter(query: str) -> Optional[str]:
     """Infer likely legal source from query text for retrieval precision."""
     normalized = query.lower()
+
+    if "bharatiya nyaya sanhita" in normalized:
+        return "Bharatiya Nyaya Sanhita"
+    if "bharatiya nagarik suraksha sanhita" in normalized:
+        return "Bharatiya Nagarik Suraksha Sanhita"
+    if "bharatiya sakshya adhiniyam" in normalized:
+        return "Bharatiya Sakshya Adhiniyam"
 
     if "constitution" in normalized or "article" in normalized:
         return "Constitution of India"
@@ -198,6 +292,13 @@ def infer_act_filters(query: str) -> list[str | None]:
     """Infer one or more likely legal sources for retrieval coverage."""
     normalized = query.lower()
     filters: list[str | None] = []
+
+    if "bharatiya nyaya sanhita" in normalized:
+        filters.append("Bharatiya Nyaya Sanhita")
+    if "bharatiya nagarik suraksha sanhita" in normalized:
+        filters.append("Bharatiya Nagarik Suraksha Sanhita")
+    if "bharatiya sakshya adhiniyam" in normalized:
+        filters.append("Bharatiya Sakshya Adhiniyam")
 
     if "constitution" in normalized or "article" in normalized:
         filters.append("Constitution of India")
@@ -273,12 +374,27 @@ def _references_match(requested: str | None, candidate: str | None) -> bool:
     return False
 
 
+def _reference_has_subsection(value: str | None) -> bool:
+    """Check whether reference explicitly includes subsection notation like 303(2)."""
+    if not value:
+        return False
+    return bool(re.search(r"\([0-9A-Z]+\)", str(value), flags=re.IGNORECASE))
+
+
+def _reference_match_for_fir(requested: str | None, candidate: str | None) -> bool:
+    """Match FIR references with stricter behavior when subsection is explicitly requested."""
+    if _reference_has_subsection(requested):
+        return _normalize_reference(requested) == _normalize_reference(candidate)
+    return _references_match(requested, candidate)
+
+
 def _extract_requested_references(query: str) -> list[str]:
     """Extract all requested section/article references from query text."""
     references: list[str] = []
+    ref_pattern = r"([0-9]+[a-z]?(?:\([0-9a-z]+\))?)"
 
     section_refs = re.findall(
-        r"\b(?:section|sec\.?|u/s)\s*([0-9]+[a-z]?)\b",
+        rf"\b(?:section|sec\.?|u/s)\s*{ref_pattern}(?=\D|$)",
         query,
         flags=re.IGNORECASE,
     )
@@ -290,18 +406,18 @@ def _extract_requested_references(query: str) -> list[str]:
         flags=re.IGNORECASE,
     )
     for block in plural_section_blocks:
-        values = re.findall(r"\b([0-9]+[a-z]?)\b", block, flags=re.IGNORECASE)
+        values = re.findall(rf"{ref_pattern}(?=\D|$)", block, flags=re.IGNORECASE)
         references.extend([str(item).upper() for item in values])
 
     article_refs = re.findall(
-        r"\b(?:article|art\.?)\s*([0-9]+[a-z]?)\b",
+        rf"\b(?:article|art\.?)\s*{ref_pattern}(?=\D|$)",
         query,
         flags=re.IGNORECASE,
     )
     references.extend([str(item).upper() for item in article_refs])
 
     shorthand_refs = re.findall(
-        r"\b(?:bns|bnss|bsa|ipc|crpc)\s*[-/]?\s*([0-9]+[a-z]?)\b",
+        rf"\b(?:bns|bnss|bsa|ipc|crpc)\s*[-/]?\s*{ref_pattern}(?=\D|$)",
         query,
         flags=re.IGNORECASE,
     )
@@ -341,13 +457,21 @@ def _citation_matches_allowed_acts(citation: Citation, act_filters: list[str | N
     if not effective_filters:
         return True
 
-    haystack = _normalize_text_token(
-        f"{citation.title} {citation.source} {citation.doc_id}"
-    )
+    raw_haystack = f"{citation.title} {citation.source} {citation.doc_id}"
+    haystack = _normalize_text_token(raw_haystack)
+    token_haystack = set(re.findall(r"[a-z0-9]+", raw_haystack.lower()))
 
     for act_name in effective_filters:
         for alias in _act_aliases(str(act_name)):
-            if alias and alias in haystack:
+            if not alias:
+                continue
+
+            if alias in {"bns", "bnss", "bsa", "ipc", "crpc"}:
+                if alias in token_haystack:
+                    return True
+                continue
+
+            if alias in haystack:
                 return True
     return False
 
@@ -398,6 +522,49 @@ def _normalize_citation_links(citations: list[Citation]) -> list[Citation]:
         normalized_url = _append_page_anchor(source_url, citation.page)
         normalized.append(citation.model_copy(update={"source_url": normalized_url}))
     return normalized
+
+
+def _retrieve_legal_citations(masked_query: str) -> tuple[list[Citation], Optional[float]]:
+    """Retrieve citation objects and overall confidence for a query."""
+    chroma_manager = get_chroma_manager()
+    act_filters = infer_act_filters(masked_query)
+
+    raw_citations: list[dict[str, Any]] = []
+    seen_citations: set[tuple[str, str]] = set()
+
+    for act_filter in act_filters:
+        retrieval = chroma_manager.retrieve_context_with_metadata(
+            query_string=masked_query,
+            filter_status="active",
+            filter_act=act_filter,
+        )
+
+        for item in retrieval.get("citations", []):
+            citation_doc_id = str(item.get("doc_id") or "")
+            citation_snippet = str(item.get("snippet") or "")
+            citation_key = (citation_doc_id, citation_snippet.strip().lower())
+            if citation_key in seen_citations:
+                continue
+            seen_citations.add(citation_key)
+            raw_citations.append(item)
+
+    citations = [Citation(**item) for item in raw_citations]
+    citations = [
+        citation
+        for citation in citations
+        if _citation_matches_allowed_acts(citation, act_filters)
+    ]
+    citations.sort(key=lambda item: item.confidence, reverse=True)
+    citations = _normalize_citation_links(citations[:8])
+
+    if not citations:
+        return [], None
+
+    overall_confidence = round(
+        sum(item.confidence for item in citations) / len(citations),
+        2,
+    )
+    return citations, overall_confidence
 
 # --- Dependency to verify Firebase Auth Token (Mocked for now) ---
 async def verify_token(authorization: str = Header(None)):
@@ -509,7 +676,14 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                         )
                     ]
 
-                retrieved_context = [item.snippet for item in citations if item.snippet]
+                retrieved_context = [
+                    (
+                        f"[Act: {item.title} | Source: {item.source} | Section: {item.section}]\n"
+                        f"{item.snippet}"
+                    )
+                    for item in citations
+                    if item.snippet
+                ]
 
                 if citations:
                     overall_confidence = round(
@@ -587,6 +761,163 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/fir/analyze", response_model=OCRAnalyzeResponse)
+async def analyze_fir_document(
+    file: UploadFile = File(...),
+    query: str | None = Form(default=None),
+    user: dict = Depends(verify_token),
+):
+    """Analyze uploaded FIR/scanned document with OCR, translation, PII masking, and legal grounding."""
+    global _bm25_refresh_counter
+
+    del user  # endpoint allows guest mode as with chat
+
+    filename = file.filename or "uploaded_document"
+    extension = Path(filename).suffix.lower()
+    allowed_extensions = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tiff", ".bmp"}
+
+    if extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Upload PDF, PNG, JPG, JPEG, WEBP, TIFF, or BMP.",
+        )
+
+    temp_path = ""
+    try:
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+        with NamedTemporaryFile(delete=False, suffix=extension) as tmp_file:
+            tmp_file.write(file_bytes)
+            temp_path = tmp_file.name
+
+        ocr_service = get_ocr_service()
+        pages = ocr_service.extract_pages(temp_path)
+        if not pages:
+            raise HTTPException(status_code=422, detail="No readable text found in uploaded document.")
+
+        translated_pages = translate_pages_to_english(pages)
+        compiled_text = "\n\n".join(
+            f"[Page {item['page']}]\n{item['text_en']}"
+            for item in translated_pages
+            if str(item.get("text_en") or "").strip()
+        )
+        if not compiled_text.strip():
+            raise HTTPException(status_code=422, detail="Unable to translate OCR text to usable content.")
+
+        pii_vault = get_pii_vault()
+        llm_engine = get_llm_engine()
+        masked_text, pii_map = pii_vault.mask_text(compiled_text)
+
+        summary_prompt = (
+            "Summarize this FIR/scanned legal document in English with clear bullet points. "
+            "Use ONLY facts explicitly visible in OCR text. If any field is unclear/noisy, say 'Not clearly visible in OCR'. "
+            "Do not infer dates, years, FIR numbers, names, or legal sections from patterns.\n\n"
+            f"Document text:\n{masked_text[:20000]}"
+        )
+        summary_masked = llm_engine.generate_general_response(summary_prompt)
+
+        effective_query = (query or "").strip() or summary_masked
+        requested_references = _extract_requested_references(f"{masked_text[:6000]}\n{effective_query[:1500]}")
+        reference_hint = ", ".join(requested_references[:10]) if requested_references else "Not clearly visible in OCR"
+        offence_guidance_markdown = _build_offence_guidance_markdown(compiled_text, requested_references)
+        legal_query = (
+            "Identify applicable Indian legal provisions, probable Acts, and likely Sections "
+            "for this FIR/scanned document. Use OCR text as primary evidence and do not invent missing facts. "
+            "If OCR text is unclear, explicitly mention uncertainty."
+            f"\n\nObserved references in OCR text: {reference_hint}"
+            f"\n\nOCR Extracted Text:\n{masked_text[:12000]}"
+            f"\n\nSummary Draft:\n{summary_masked[:3000]}"
+            f"\n\nUser focus:\n{effective_query[:1500]}"
+        )
+
+        _bm25_refresh_counter += 1
+        if _bm25_refresh_counter % 5 == 0:
+            get_chroma_manager().refresh_bm25_from_oracle(filter_status="active", filter_act=None)
+
+        citations, overall_confidence = _retrieve_legal_citations(legal_query)
+
+        if citations and requested_references:
+            matched_citations = [
+                item
+                for item in citations
+                if any(_reference_match_for_fir(reference, item.section) for reference in requested_references)
+            ]
+            if matched_citations:
+                citations = matched_citations
+                overall_confidence = round(
+                    sum(item.confidence for item in citations) / len(citations),
+                    2,
+                )
+            else:
+                citations = []
+                overall_confidence = None
+
+        retrieved_context = [
+            (
+                f"[Act: {item.title} | Source: {item.source} | Section: {item.section}]\n"
+                f"{item.snippet}"
+            )
+            for item in citations
+            if item.snippet
+        ]
+
+        if not retrieved_context:
+            ocr_reference_hint = ", ".join(requested_references[:8]) if requested_references else "none clearly detected"
+            final_response_masked = (
+                "I extracted and summarized the uploaded document, but I could not find sufficiently "
+                "reliable legal-source matches yet. "
+                f"OCR-detected legal references: {ocr_reference_hint}. "
+                "Please refine the query with known Act/Section references or verify the exact section text."
+            )
+            if offence_guidance_markdown:
+                final_response_masked = f"{final_response_masked}\n\n{offence_guidance_markdown}"
+        else:
+            final_response_masked = llm_engine.generate_legal_response(
+                masked_query=legal_query,
+                retrieved_context_list=retrieved_context,
+            )
+            if offence_guidance_markdown:
+                final_response_masked = (
+                    f"{final_response_masked}\n\n"
+                    "### Practical Next Steps\n"
+                    f"{offence_guidance_markdown}"
+                )
+
+        summary = pii_vault.unmask_text(summary_masked, pii_map)
+        final_response = pii_vault.unmask_text(final_response_masked, pii_map)
+
+        extracted_pages = [
+            OCRPageResult(
+                page=int(item.get("page") or 1),
+                detected_language=str(item.get("detected_language") or "unknown"),
+                text_en=str(item.get("text_en") or ""),
+            )
+            for item in translated_pages
+        ]
+
+        return OCRAnalyzeResponse(
+            response=final_response,
+            summary=summary,
+            extracted_pages=extracted_pages,
+            citations=citations,
+            overall_confidence=overall_confidence,
+            masked_entities=pii_map,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("FIR OCR analysis failed: %s", exc)
+        raise HTTPException(status_code=500, detail="FIR OCR analysis failed. Please try again.")
+    finally:
+        if temp_path:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 @app.get("/api/history/sessions", response_model=list[SessionSummary])

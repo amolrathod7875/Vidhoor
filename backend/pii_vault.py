@@ -59,7 +59,7 @@ class PIIVault:
 				patterns=[
 					Pattern(
 						name="in_aadhaar_pattern",
-						regex=r"\b\d{4}\s?\d{4}\s?\d{4}\b",
+						regex=r"\b\d{4}\s*\d{4}\s*\d{4}\b",
 						score=0.85,
 					)
 				],
@@ -97,6 +97,27 @@ class PIIVault:
 	@staticmethod
 	def _is_likely_person_phrase(value: str) -> bool:
 		"""Heuristic filter to reduce non-name PERSON false positives."""
+		cleaned = re.sub(r"\s+", " ", value).strip()
+		if not cleaned:
+			return False
+
+		lowered = cleaned.lower()
+		disallowed_phrases = {
+			"police station",
+			"complainant details",
+			"aadhaar no",
+			"mobile no",
+			"vehicle theft",
+			"information of offence",
+			"acts & sections",
+			"acts and sections",
+		}
+		if any(phrase in lowered for phrase in disallowed_phrases):
+			return False
+
+		if re.search(r"\d", cleaned):
+			return False
+
 		disallowed_tokens = {
 			"explain",
 			"article",
@@ -108,11 +129,34 @@ class PIIVault:
 			"what",
 			"tell",
 			"please",
+			"police",
+			"station",
+			"complainant",
+			"details",
+			"aadhaar",
+			"mobile",
+			"vehicle",
+			"theft",
+			"information",
+			"offence",
+			"acts",
+			"sections",
+			"signature",
+			"address",
+			"type",
+			"hero",
+			"splendor",
 		}
-		words = [item for item in re.split(r"\s+", value.strip()) if item]
-		if len(words) < 2:
-			return False
-		return words[0].lower() not in disallowed_tokens and words[1].lower() not in disallowed_tokens
+
+		if re.fullmatch(r"(?:[A-Z]\.\s*){1,3}[A-Z][a-z]+", cleaned):
+			last_name = re.sub(r"^(?:[A-Z]\.\s*){1,3}", "", cleaned).lower()
+			return last_name not in disallowed_tokens
+
+		if re.fullmatch(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}", cleaned):
+			words = [word.lower() for word in cleaned.split()]
+			return not any(word in disallowed_tokens for word in words)
+
+		return False
 
 	@staticmethod
 	def _fallback_regex_detections(text: str) -> list[Detection]:
@@ -120,7 +164,7 @@ class PIIVault:
 		patterns: list[tuple[str, str]] = [
 			("EMAIL_ADDRESS", r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"),
 			("PHONE_NUMBER", r"\b(?:\+91[-\s]?)?[6-9]\d{9}\b"),
-			("IN_AADHAAR", r"\b\d{4}\s?\d{4}\s?\d{4}\b"),
+			("IN_AADHAAR", r"\b\d{4}\s*\d{4}\s*\d{4}\b"),
 			("IN_PAN", r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),
 			(
 				"PERSON",
@@ -159,6 +203,8 @@ class PIIVault:
 					score=result.score,
 				)
 				for result in results
+				if result.entity_type != "PERSON"
+				or self._is_likely_person_phrase(text[result.start : result.end])
 			]
 			return self._prune_overlaps(detections)
 		except Exception as exc:

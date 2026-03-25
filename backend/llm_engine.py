@@ -84,7 +84,8 @@ class LLMEngine:
 						"You must ONLY answer using the provided legal context. "
 						"If the context does not contain the answer, clearly say the context is insufficient. "
 						"If a specific section/article is requested, do not infer from nearby text unless that exact section/article appears in context. "
-						"Do not hallucinate."
+						"Do not hallucinate. "
+						"Use Act name and section identifiers exactly as shown in context metadata; do not rename BNS/BNSS/BSA to IPC/CrPC/Evidence Act unless metadata explicitly says so."
 					),
 				),
 				(
