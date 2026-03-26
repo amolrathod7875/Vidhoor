@@ -1,30 +1,58 @@
 import { useRef, useState, KeyboardEvent, ChangeEvent } from "react";
-import { ArrowUp, Paperclip } from "lucide-react";
+import { ArrowUp, FileText, ImageIcon, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import TextareaAutosize from "react-textarea-autosize";
 import { useAuth } from "@/hooks/useAuth";
 
 interface Props {
   onSend: (text: string) => void;
-  onUploadFile: (file: File) => void;
+  onUploadFiles: (files: File[]) => void;
   disabled: boolean;
   isUploading?: boolean;
   guestRemaining: number;
+  activeDocuments?: Array<{
+    id: string;
+    name: string;
+    type: "image" | "document";
+  }>;
+  onRemoveActiveDocument?: (id: string) => void;
 }
+
+const MAX_ACTIVE_DOCUMENTS = 5;
 
 export function ChatInput({
   onSend,
-  onUploadFile,
+  onUploadFiles,
   disabled,
   isUploading = false,
   guestRemaining,
+  activeDocuments = [],
+  onRemoveActiveDocument,
 }: Props) {
   const [text, setText] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { user } = useAuth();
 
   const isBlocked = !user && disabled;
+
+  const openFilePicker = (uploadType: "image" | "document") => {
+    if (isBlocked || isUploading || !fileInputRef.current) {
+      return;
+    }
+
+    fileInputRef.current.accept =
+      uploadType === "image"
+        ? "image/*"
+        : ".pdf,.doc,.docx,.txt,.rtf";
+    fileInputRef.current.click();
+  };
 
   const handleSend = () => {
     const trimmed = text.trim();
@@ -41,11 +69,24 @@ export function ChatInput({
   };
 
   const handleFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
-    const selected = event.target.files?.[0];
-    if (!selected || isBlocked || isUploading) {
+    const selectedFiles = Array.from(event.target.files ?? []);
+    if (!selectedFiles.length || isBlocked || isUploading) {
       return;
     }
-    onUploadFile(selected);
+
+    const remainingSlots = Math.max(0, MAX_ACTIVE_DOCUMENTS - activeDocuments.length);
+    if (remainingSlots <= 0) {
+      window.alert("You can upload up to 5 files only.");
+      event.target.value = "";
+      return;
+    }
+
+    const filesToUpload = selectedFiles.slice(0, remainingSlots);
+    if (selectedFiles.length > remainingSlots) {
+      window.alert(`Only ${remainingSlots} more file(s) can be uploaded.`);
+    }
+
+    onUploadFiles(filesToUpload);
     event.target.value = "";
   };
 
@@ -60,6 +101,44 @@ export function ChatInput({
         </div>
       )}
 
+      {activeDocuments.length > 0 && (
+        <div className="mb-2 space-y-2">
+          {activeDocuments.map((doc) => (
+            <div
+              key={doc.id}
+              className="flex items-center justify-between rounded-2xl border border-border/60 bg-muted/50 px-3 py-2"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="rounded-md bg-background/70 p-1 text-muted-foreground">
+                  {doc.type === "image" ? (
+                    <ImageIcon className="h-3.5 w-3.5" />
+                  ) : (
+                    <FileText className="h-3.5 w-3.5" />
+                  )}
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">{doc.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {doc.type === "image" ? "Image" : "Document"} attached for grounded chat
+                  </p>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => onRemoveActiveDocument?.(doc.id)}
+                className="h-7 w-7 shrink-0 rounded-lg text-muted-foreground"
+                title="Remove uploaded document context"
+                disabled={isUploading}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Input box */}
       <div
         className={cn(
@@ -70,21 +149,33 @@ export function ChatInput({
         <input
           ref={fileInputRef}
           type="file"
-          accept=".pdf,.png,.jpg,.jpeg,.webp,.tiff,.bmp"
+          multiple
+          accept="image/*,.pdf,.doc,.docx,.txt,.rtf"
           className="hidden"
           onChange={handleFileSelect}
         />
-        <Button
-          size="icon"
-          type="button"
-          variant="ghost"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isBlocked || isUploading}
-          className="m-1.5 h-8 w-8 shrink-0 rounded-xl text-muted-foreground"
-          title="Upload FIR or scanned document"
-        >
-          <Paperclip className="h-4 w-4" />
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="icon"
+              type="button"
+              variant="ghost"
+              disabled={isBlocked || isUploading}
+              className="m-1.5 h-8 w-8 shrink-0 rounded-xl text-muted-foreground"
+              title="Upload file"
+            >
+              <Paperclip className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="top" className="w-36">
+            <DropdownMenuItem onSelect={() => openFilePicker("image")}>
+              Upload image
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => openFilePicker("document")}>
+              Upload document
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <TextareaAutosize
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -95,7 +186,9 @@ export function ChatInput({
               ? "Sign in to continue…"
               : isUploading
                 ? "Processing uploaded document…"
-              : "Ask Vidhoor a legal question…"
+                : activeDocuments.length > 0
+                  ? "Ask questions about the uploaded documents…"
+                  : "Ask Vidhoor a legal question…"
           }
           minRows={1}
           maxRows={5}

@@ -52,6 +52,10 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     is_temporary_chat: bool = False
+    document_context: Optional[str] = None
+    document_name: Optional[str] = None
+    document_contexts: list[str] | None = None
+    document_names: list[str] | None = None
 
 
 class Citation(BaseModel):
@@ -589,6 +593,28 @@ def get_required_user_id(user: dict[str, Any] | None) -> str:
         raise HTTPException(status_code=401, detail="Authentication required")
     return str(user["uid"])
 
+
+def _generate_document_grounded_response(
+    llm_engine: LLMEngine,
+    masked_query: str,
+    masked_document_context: str,
+    document_name: str | None,
+) -> str:
+    """Generate response grounded in uploaded document context."""
+    context_snippet = (masked_document_context or "")[:12000]
+    document_label = document_name or "uploaded document"
+    prompt = (
+        "You are answering a question about an uploaded legal document. "
+        "Use only the provided document context when describing facts from the document. "
+        "If the answer is not present in document context, explicitly say what is missing. "
+        "When legal interpretation is requested, keep the answer practical and cautious.\n\n"
+        f"Document name: {document_label}\n\n"
+        f"Document context:\n{context_snippet}\n\n"
+        f"User question:\n{masked_query}\n\n"
+        "Answer in markdown with short headings and bullet points when useful."
+    )
+    return llm_engine.generate_general_response(prompt)
+
 # --- Core API Endpoints ---
 
 @app.get("/")
@@ -602,6 +628,32 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
         pii_vault = get_pii_vault()
         llm_engine = get_llm_engine()
         masked_message, pii_map = pii_vault.mask_text(request.message)
+
+        document_pairs: list[tuple[str, str]] = []
+        multi_contexts = [str(item or "").strip() for item in (request.document_contexts or []) if str(item or "").strip()]
+        multi_names = [str(item or "").strip() for item in (request.document_names or [])]
+        if multi_contexts:
+            for index, context in enumerate(multi_contexts, start=1):
+                name = multi_names[index - 1] if index - 1 < len(multi_names) and multi_names[index - 1] else f"Document {index}"
+                document_pairs.append((name, context))
+
+        single_context = (request.document_context or "").strip()
+        if not document_pairs and single_context:
+            document_pairs.append((request.document_name or "uploaded document", single_context))
+
+        document_context = ""
+        if document_pairs:
+            merged_blocks = [
+                f"[{name}]\n{context[:4000]}"
+                for name, context in document_pairs[:5]
+            ]
+            document_context = "\n\n---\n\n".join(merged_blocks)[:16000]
+
+        masked_document_context = ""
+        if document_context:
+            masked_document_context, _ = pii_vault.mask_text(document_context)
+
+        document_label = ", ".join(name for name, _ in document_pairs[:5]) if document_pairs else None
         session_id = request.session_id or f"session_{uuid4().hex}"
         citations: list[Citation] = []
         overall_confidence: Optional[float] = None
@@ -613,7 +665,15 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                 if _bm25_refresh_counter % 5 == 0:
                     chroma_manager.refresh_bm25_from_oracle(filter_status="active", filter_act=None)
 
-                act_filters = infer_act_filters(masked_message)
+                retrieval_query = masked_message
+                if masked_document_context:
+                    retrieval_query = (
+                        f"{masked_message}\n\n"
+                        "Document context (for grounding):\n"
+                        f"{masked_document_context[:3000]}"
+                    )
+
+                act_filters = infer_act_filters(retrieval_query)
 
                 retrieved_context: list[str] = []
                 raw_citations: list[dict[str, Any]] = []
@@ -622,7 +682,7 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
 
                 for act_filter in act_filters:
                     retrieval = chroma_manager.retrieve_context_with_metadata(
-                        query_string=masked_message,
+                        query_string=retrieval_query,
                         filter_status="active",
                         filter_act=act_filter,
                     )
@@ -692,12 +752,22 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                     )
 
                 if not retrieved_context:
-                    citations = []
-                    overall_confidence = None
-                    ai_response_masked = (
-                        "I couldn't find sufficiently reliable legal sources for this query. "
-                        "Please include the exact Act and section/article reference, then try again."
-                    )
+                    if masked_document_context:
+                        citations = []
+                        overall_confidence = None
+                        ai_response_masked = _generate_document_grounded_response(
+                            llm_engine=llm_engine,
+                            masked_query=masked_message,
+                            masked_document_context=masked_document_context,
+                            document_name=document_label,
+                        )
+                    else:
+                        citations = []
+                        overall_confidence = None
+                        ai_response_masked = (
+                            "I couldn't find sufficiently reliable legal sources for this query. "
+                            "Please include the exact Act and section/article reference, then try again."
+                        )
                 elif requested_references and not has_direct_reference_match:
                     requested_text = ", ".join(requested_references)
                     ai_response_masked = (
@@ -706,8 +776,15 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                         "Please verify the Act and section/article numbering, or refine the query."
                     )
                 else:
+                    legal_masked_query = masked_message
+                    if masked_document_context:
+                        legal_masked_query = (
+                            f"{masked_message}\n\n"
+                            "Document context from uploaded file:\n"
+                            f"{masked_document_context[:5000]}"
+                        )
                     ai_response_masked = llm_engine.generate_legal_response(
-                        masked_query=masked_message,
+                        masked_query=legal_masked_query,
                         retrieved_context_list=retrieved_context,
                     )
             except Exception as exc:
@@ -717,9 +794,17 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                     "citation-grounded legal answer at the moment. Please try again shortly."
                 )
         else:
-            ai_response_masked = llm_engine.generate_general_response(
-                masked_query=masked_message,
-            )
+            if masked_document_context:
+                ai_response_masked = _generate_document_grounded_response(
+                    llm_engine=llm_engine,
+                    masked_query=masked_message,
+                    masked_document_context=masked_document_context,
+                    document_name=document_label,
+                )
+            else:
+                ai_response_masked = llm_engine.generate_general_response(
+                    masked_query=masked_message,
+                )
         
         final_readable_response = pii_vault.unmask_text(ai_response_masked, pii_map)
         

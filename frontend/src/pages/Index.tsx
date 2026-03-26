@@ -52,6 +52,15 @@ interface OCRAnalyzeApiResponse {
   masked_entities: Record<string, unknown>;
 }
 
+interface ActiveDocumentContext {
+  id: string;
+  name: string;
+  type: "image" | "document";
+  contextText: string;
+}
+
+const MAX_ACTIVE_DOCUMENTS = 5;
+
 interface HistorySessionResponse {
   session_id: string;
   title: string;
@@ -79,6 +88,7 @@ function ChatApp() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [activeDocuments, setActiveDocuments] = useState<ActiveDocumentContext[]>([]);
   const [tempChat, setTempChat] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const prevTempChat = useRef(tempChat);
@@ -96,6 +106,7 @@ function ChatApp() {
   useEffect(() => {
     if (prevTempChat.current !== tempChat) {
       setActiveId(null);
+      setActiveDocuments([]);
       prevTempChat.current = tempChat;
     }
   }, [tempChat]);
@@ -267,6 +278,10 @@ function ChatApp() {
           message: text,
           session_id: sid,
           is_temporary_chat: tempChat,
+          document_context: activeDocuments[0]?.contextText,
+          document_name: activeDocuments[0]?.name,
+          document_contexts: activeDocuments.map((doc) => doc.contextText),
+          document_names: activeDocuments.map((doc) => doc.name),
         }),
       });
 
@@ -306,7 +321,11 @@ function ChatApp() {
     }
   };
 
-  const handleUploadFile = async (file: File) => {
+  const handleUploadFiles = async (files: File[]) => {
+    if (files.length === 0) {
+      return;
+    }
+
     let sid = activeId;
 
     if (!sid) {
@@ -327,40 +346,68 @@ function ChatApp() {
       setActiveId(sid);
     }
 
-    addMessage("user", `Uploaded document: ${file.name}`, sid);
+    const availableSlots = Math.max(0, MAX_ACTIVE_DOCUMENTS - activeDocuments.length);
+    if (availableSlots <= 0) {
+      toast.error("You can upload up to 5 files only");
+      return;
+    }
+
+    const filesToUpload = files.slice(0, availableSlots);
+    if (files.length > availableSlots) {
+      toast.error(`Only ${availableSlots} more file(s) can be uploaded`);
+    }
+
     setIsUploadingDocument(true);
     setIsTyping(true);
 
     try {
       const token = user ? await user.getIdToken() : null;
-      const formData = new FormData();
-      formData.append("file", file);
+      for (const file of filesToUpload) {
+        const formData = new FormData();
+        formData.append("file", file);
 
-      const response = await fetch(`${API_BASE_URL}/api/fir/analyze`, {
-        method: "POST",
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: formData,
-      });
+        const response = await fetch(`${API_BASE_URL}/api/fir/analyze`, {
+          method: "POST",
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: formData,
+        });
 
-      if (!response.ok) {
-        throw new Error(`Document analysis failed with status ${response.status}`);
+        if (!response.ok) {
+          throw new Error(`Document analysis failed with status ${response.status}`);
+        }
+
+        const data = (await response.json()) as OCRAnalyzeApiResponse;
+        const extractedContext = data.extracted_pages
+          .map((page) => `[Page ${page.page}]\n${page.text_en}`)
+          .join("\n\n")
+          .trim();
+        const isImage = file.type.startsWith("image/");
+
+        setActiveDocuments((prev) => [
+          ...prev,
+          {
+            id: String(nextId++),
+            name: file.name,
+            type: isImage ? "image" : "document",
+            contextText: extractedContext || data.summary,
+          },
+        ]);
+
+        const assistantContent = [
+          "### OCR Summary",
+          data.summary,
+          "",
+          "### Legal Analysis",
+          data.response,
+        ].join("\n");
+
+        addMessage("assistant", assistantContent, sid, {
+          citations: data.citations ?? [],
+          overall_confidence: data.overall_confidence ?? null,
+        });
       }
-
-      const data = (await response.json()) as OCRAnalyzeApiResponse;
-      const assistantContent = [
-        "### OCR Summary",
-        data.summary,
-        "",
-        "### Legal Analysis",
-        data.response,
-      ].join("\n");
-
-      addMessage("assistant", assistantContent, sid, {
-        citations: data.citations ?? [],
-        overall_confidence: data.overall_confidence ?? null,
-      });
     } catch (error) {
       console.error(error);
       addMessage(
@@ -377,10 +424,12 @@ function ChatApp() {
 
   const handleNewChat = () => {
     setActiveId(null);
+    setActiveDocuments([]);
   };
 
   const handleSelectSession = async (id: string) => {
     setActiveId(id);
+    setActiveDocuments([]);
     if (!tempChat) {
       await fetchSessionMessages(id);
     }
@@ -713,10 +762,16 @@ function ChatApp() {
           {/* Input */}
           <ChatInput
             onSend={handleSend}
-            onUploadFile={handleUploadFile}
+            onUploadFiles={handleUploadFiles}
             disabled={inputDisabled}
             isUploading={isUploadingDocument}
             guestRemaining={guestRemaining}
+            activeDocuments={activeDocuments}
+            onRemoveActiveDocument={(documentId) =>
+              setActiveDocuments((prev) =>
+                prev.filter((document) => document.id !== documentId)
+              )
+            }
           />
         </div>
       </div>
