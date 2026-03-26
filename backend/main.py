@@ -7,7 +7,6 @@ import logging
 import os
 import re
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from urllib.parse import quote
 from uuid import uuid4
 import uvicorn
@@ -91,6 +90,32 @@ class OCRAnalyzeResponse(BaseModel):
     citations: list[Citation] = []
     overall_confidence: Optional[float] = None
     masked_entities: dict
+    evidence_id: str | None = None
+    encrypted_stored: bool = False
+
+
+class EvidenceSummary(BaseModel):
+    evidence_id: str
+    file_name: str
+    file_extension: str
+    encryption_alg: str
+    key_id: str
+    session_id: str
+    created_at: str
+
+
+class EvidencePayloadResponse(BaseModel):
+    evidence_id: str
+    file_name: str
+    file_extension: str
+    encryption_alg: str
+    key_id: str
+    iv_b64: str
+    encrypted_payload_b64: str
+    masked_summary: str
+    masked_analysis: str
+    session_id: str
+    created_at: str
 
 
 class SessionSummary(BaseModel):
@@ -852,12 +877,16 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
 async def analyze_fir_document(
     file: UploadFile = File(...),
     query: str | None = Form(default=None),
+    encrypted_payload_b64: str | None = Form(default=None),
+    iv_b64: str | None = Form(default=None),
+    encryption_alg: str | None = Form(default=None),
+    key_id: str | None = Form(default=None),
+    session_id: str | None = Form(default=None),
+    is_temporary_chat: bool = Form(default=False),
     user: dict = Depends(verify_token),
 ):
     """Analyze uploaded FIR/scanned document with OCR, translation, PII masking, and legal grounding."""
     global _bm25_refresh_counter
-
-    del user  # endpoint allows guest mode as with chat
 
     filename = file.filename or "uploaded_document"
     extension = Path(filename).suffix.lower()
@@ -869,18 +898,17 @@ async def analyze_fir_document(
             detail="Unsupported file type. Upload PDF, PNG, JPG, JPEG, WEBP, TIFF, or BMP.",
         )
 
-    temp_path = ""
+    evidence_id: str | None = None
+    encrypted_stored = False
+
     try:
         file_bytes = await file.read()
         if not file_bytes:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-        with NamedTemporaryFile(delete=False, suffix=extension) as tmp_file:
-            tmp_file.write(file_bytes)
-            temp_path = tmp_file.name
-
         ocr_service = get_ocr_service()
-        pages = ocr_service.extract_pages(temp_path)
+        pages = ocr_service.extract_pages_from_bytes(filename=filename, file_bytes=file_bytes)
+        del file_bytes
         if not pages:
             raise HTTPException(status_code=422, detail="No readable text found in uploaded document.")
 
@@ -975,6 +1003,54 @@ async def analyze_fir_document(
         summary = pii_vault.unmask_text(summary_masked, pii_map)
         final_response = pii_vault.unmask_text(final_response_masked, pii_map)
 
+        assistant_content = [
+            "### OCR Summary",
+            summary,
+            "",
+            "### Legal Analysis",
+            final_response,
+        ]
+
+        if not is_temporary_chat and user and user.get("uid") and session_id:
+            try:
+                chat_repo = get_chat_repo()
+                chat_repo.save_chat_turn(
+                    user_id=str(user["uid"]),
+                    session_id=session_id,
+                    user_message=f"Uploaded document: {filename}",
+                    assistant_message="\n".join(assistant_content),
+                    masked_entities=pii_map,
+                )
+            except Exception as exc:
+                logger.exception("Failed to persist upload chat history: %s", exc)
+
+        if (
+            user
+            and user.get("uid")
+            and encrypted_payload_b64
+            and iv_b64
+            and encryption_alg
+        ):
+            try:
+                evidence_id = f"evi_{uuid4().hex}"
+                chat_repo = get_chat_repo()
+                chat_repo.save_encrypted_evidence(
+                    user_id=str(user["uid"]),
+                    evidence_id=evidence_id,
+                    file_name=filename,
+                    file_extension=extension,
+                    encrypted_payload_b64=encrypted_payload_b64,
+                    iv_b64=iv_b64,
+                    encryption_alg=encryption_alg,
+                    key_id=key_id,
+                    masked_summary=summary_masked,
+                    masked_analysis=final_response_masked,
+                    session_id=session_id,
+                )
+                encrypted_stored = True
+            except Exception as exc:
+                logger.exception("Failed to persist encrypted evidence: %s", exc)
+
         extracted_pages = [
             OCRPageResult(
                 page=int(item.get("page") or 1),
@@ -991,18 +1067,53 @@ async def analyze_fir_document(
             citations=citations,
             overall_confidence=overall_confidence,
             masked_entities=pii_map,
+            evidence_id=evidence_id,
+            encrypted_stored=encrypted_stored,
         )
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("FIR OCR analysis failed: %s", exc)
         raise HTTPException(status_code=500, detail="FIR OCR analysis failed. Please try again.")
-    finally:
-        if temp_path:
-            try:
-                Path(temp_path).unlink(missing_ok=True)
-            except Exception:
-                pass
+
+
+@app.get("/api/evidence", response_model=list[EvidenceSummary])
+async def list_user_evidence(
+    session_id: str | None = None,
+    user: dict = Depends(verify_token),
+):
+    """List encrypted uploaded resources for authenticated user."""
+    user_id = get_required_user_id(user)
+
+    try:
+        chat_repo = get_chat_repo()
+        rows = chat_repo.list_user_evidence(user_id=user_id, session_id=session_id)
+        return [EvidenceSummary(**item) for item in rows]
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch evidence list: {exc}")
+
+
+@app.get("/api/evidence/{evidence_id}", response_model=EvidencePayloadResponse)
+async def get_user_evidence(evidence_id: str, user: dict = Depends(verify_token)):
+    """Get one encrypted uploaded resource payload for authenticated user."""
+    user_id = get_required_user_id(user)
+
+    try:
+        chat_repo = get_chat_repo()
+        payload = chat_repo.get_evidence_payload(user_id=user_id, evidence_id=evidence_id)
+        if not payload:
+            raise HTTPException(status_code=404, detail="Evidence not found")
+        return EvidencePayloadResponse(**payload)
+    except HTTPException:
+        raise
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch evidence payload: {exc}")
 
 
 @app.get("/api/history/sessions", response_model=list[SessionSummary])

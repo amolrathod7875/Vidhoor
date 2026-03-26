@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +108,75 @@ class VisionOCRService:
 
         raise RuntimeError(f"OCR.space request failed after retries: {last_error}")
 
+    def _request_ocr_from_bytes(self, filename: str, file_bytes: bytes) -> dict[str, Any]:
+        attempts = max(1, int(self.max_retries))
+        last_error: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                buffer = BytesIO(file_bytes)
+                files = {
+                    "filename": (filename, buffer),
+                }
+                data = {
+                    "language": self.language,
+                    "isOverlayRequired": "false",
+                    "OCREngine": str(self.ocr_engine),
+                    "detectOrientation": "true",
+                    "scale": "true",
+                }
+                headers = {
+                    "apikey": self.api_key,
+                }
+
+                response = requests.post(
+                    self.endpoint,
+                    headers=headers,
+                    data=data,
+                    files=files,
+                    timeout=self.timeout_seconds,
+                )
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < attempts:
+                    time.sleep(self.retry_delay_seconds)
+                    continue
+                raise RuntimeError(f"OCR.space request failed: {exc}") from exc
+
+            if response.status_code != 200:
+                message = f"OCR.space request failed with status {response.status_code}: {response.text}"
+                if response.status_code >= 500 and attempt < attempts:
+                    time.sleep(self.retry_delay_seconds)
+                    continue
+                raise RuntimeError(message)
+
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                last_error = exc
+                if attempt < attempts:
+                    time.sleep(self.retry_delay_seconds)
+                    continue
+                raise RuntimeError("OCR.space returned non-JSON response.") from exc
+
+            if payload.get("IsErroredOnProcessing"):
+                message = payload.get("ErrorMessage") or payload.get("ErrorDetails") or "OCR.space processing failed."
+                if isinstance(message, list):
+                    message = "; ".join(str(item) for item in message)
+                message_text = str(message)
+                is_transient = any(
+                    token in message_text.lower()
+                    for token in ["timeout", "try again", "tempor", "overload", "busy"]
+                )
+                if is_transient and attempt < attempts:
+                    time.sleep(self.retry_delay_seconds)
+                    continue
+                raise RuntimeError(f"OCR.space error: {message_text}")
+
+            return payload
+
+        raise RuntimeError(f"OCR.space request failed after retries: {last_error}")
+
     @staticmethod
     def _parse_pages(payload: dict[str, Any]) -> list[dict[str, Any]]:
         parsed_results = payload.get("ParsedResults") or []
@@ -137,5 +207,15 @@ class VisionOCRService:
             raise ValueError("Unsupported file type. Upload PDF, PNG, JPG, JPEG, WEBP, TIFF, or BMP.")
 
         payload = self._request_ocr(path)
+        return self._parse_pages(payload)
+
+    def extract_pages_from_bytes(self, filename: str, file_bytes: bytes) -> list[dict[str, Any]]:
+        """Extract OCR text page-wise from uploaded image/PDF bytes."""
+        extension = Path(filename).suffix.lower()
+
+        if extension not in {".png", ".jpg", ".jpeg", ".webp", ".tiff", ".bmp", ".pdf"}:
+            raise ValueError("Unsupported file type. Upload PDF, PNG, JPG, JPEG, WEBP, TIFF, or BMP.")
+
+        payload = self._request_ocr_from_bytes(filename=filename, file_bytes=file_bytes)
         return self._parse_pages(payload)
 

@@ -30,6 +30,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { decryptEvidencePayload, encryptFileForUpload } from "@/lib/evidenceCrypto";
 
 interface ChatApiResponse {
   response: string;
@@ -50,6 +51,8 @@ interface OCRAnalyzeApiResponse {
   citations?: Citation[];
   overall_confidence?: number | null;
   masked_entities: Record<string, unknown>;
+  evidence_id?: string | null;
+  encrypted_stored?: boolean;
 }
 
 interface ActiveDocumentContext {
@@ -57,6 +60,33 @@ interface ActiveDocumentContext {
   name: string;
   type: "image" | "document";
   contextText: string;
+  fileExtension?: string;
+  encryptedPayloadB64?: string;
+  ivB64?: string;
+}
+
+interface EvidenceSummaryResponse {
+  evidence_id: string;
+  file_name: string;
+  file_extension: string;
+  encryption_alg: string;
+  key_id: string;
+  session_id: string;
+  created_at: string;
+}
+
+interface EvidencePayloadResponse {
+  evidence_id: string;
+  file_name: string;
+  file_extension: string;
+  encryption_alg: string;
+  key_id: string;
+  iv_b64: string;
+  encrypted_payload_b64: string;
+  masked_summary: string;
+  masked_analysis: string;
+  session_id: string;
+  created_at: string;
 }
 
 const MAX_ACTIVE_DOCUMENTS = 5;
@@ -149,6 +179,81 @@ function ChatApp() {
 
     void loadHistorySessions();
   }, [user, sortSessions]);
+
+  useEffect(() => {
+    const loadActiveSessionEvidence = async () => {
+      if (!user || !activeId || tempChat) {
+        return;
+      }
+
+      try {
+        const token = await user.getIdToken();
+        const listResponse = await fetch(
+          `${API_BASE_URL}/api/evidence?session_id=${encodeURIComponent(activeId)}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+
+        if (!listResponse.ok) {
+          throw new Error(`Failed to load evidence list (${listResponse.status})`);
+        }
+
+        const listData = (await listResponse.json()) as EvidenceSummaryResponse[];
+        const sessionEvidence = listData.slice(0, MAX_ACTIVE_DOCUMENTS);
+
+        if (sessionEvidence.length === 0) {
+          setActiveDocuments([]);
+          return;
+        }
+
+        const detailResponses = await Promise.all(
+          sessionEvidence.map(async (item) => {
+            const detailResponse = await fetch(
+              `${API_BASE_URL}/api/evidence/${item.evidence_id}`,
+              {
+                method: "GET",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                },
+              }
+            );
+
+            if (!detailResponse.ok) {
+              throw new Error(
+                `Failed to load evidence payload ${item.evidence_id} (${detailResponse.status})`
+              );
+            }
+
+            return (await detailResponse.json()) as EvidencePayloadResponse;
+          })
+        );
+
+        const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"]);
+
+        setActiveDocuments(
+          detailResponses.map((item) => ({
+            id: item.evidence_id,
+            name: item.file_name,
+            type: imageExtensions.has((item.file_extension || "").toLowerCase())
+              ? "image"
+              : "document",
+            contextText: `${item.masked_summary}\n\n${item.masked_analysis}`.trim(),
+            fileExtension: item.file_extension,
+            encryptedPayloadB64: item.encrypted_payload_b64,
+            ivB64: item.iv_b64,
+          }))
+        );
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    void loadActiveSessionEvidence();
+  }, [activeId, user, tempChat]);
 
   const fetchSessionMessages = useCallback(
     async (sessionId: string) => {
@@ -363,8 +468,16 @@ function ChatApp() {
     try {
       const token = user ? await user.getIdToken() : null;
       for (const file of filesToUpload) {
+        addMessage("user", `Uploaded document: ${file.name}`, sid);
+        const encryptedUpload = await encryptFileForUpload(file);
         const formData = new FormData();
         formData.append("file", file);
+        formData.append("encrypted_payload_b64", encryptedUpload.encryptedPayloadB64);
+        formData.append("iv_b64", encryptedUpload.ivB64);
+        formData.append("encryption_alg", encryptedUpload.encryptionAlg);
+        formData.append("key_id", encryptedUpload.keyId);
+        formData.append("session_id", sid);
+        formData.append("is_temporary_chat", String(tempChat));
 
         const response = await fetch(`${API_BASE_URL}/api/fir/analyze`, {
           method: "POST",
@@ -388,10 +501,13 @@ function ChatApp() {
         setActiveDocuments((prev) => [
           ...prev,
           {
-            id: String(nextId++),
+            id: data.evidence_id || String(nextId++),
             name: file.name,
             type: isImage ? "image" : "document",
             contextText: extractedContext || data.summary,
+            fileExtension: (file.name.match(/\.[^.]+$/)?.[0] || "").toLowerCase(),
+            encryptedPayloadB64: encryptedUpload.encryptedPayloadB64,
+            ivB64: encryptedUpload.ivB64,
           },
         ]);
 
@@ -401,12 +517,20 @@ function ChatApp() {
           "",
           "### Legal Analysis",
           data.response,
+          "",
+          data.encrypted_stored
+            ? "🔐 Encrypted evidence saved for your account."
+            : "🔐 Encrypted evidence generated client-side.",
         ].join("\n");
 
-        addMessage("assistant", assistantContent, sid, {
-          citations: data.citations ?? [],
-          overall_confidence: data.overall_confidence ?? null,
-        });
+        if (!user || tempChat) {
+          addMessage("assistant", assistantContent, sid, {
+            citations: data.citations ?? [],
+            overall_confidence: data.overall_confidence ?? null,
+          });
+        } else {
+          await fetchSessionMessages(sid);
+        }
       }
     } catch (error) {
       console.error(error);
@@ -429,9 +553,83 @@ function ChatApp() {
 
   const handleSelectSession = async (id: string) => {
     setActiveId(id);
-    setActiveDocuments([]);
     if (!tempChat) {
       await fetchSessionMessages(id);
+    }
+  };
+
+  const getMimeTypeFromExtension = (extension: string | undefined): string => {
+    const normalized = (extension || "").toLowerCase();
+    switch (normalized) {
+      case ".pdf":
+        return "application/pdf";
+      case ".png":
+        return "image/png";
+      case ".jpg":
+      case ".jpeg":
+        return "image/jpeg";
+      case ".webp":
+        return "image/webp";
+      case ".bmp":
+        return "image/bmp";
+      case ".tiff":
+        return "image/tiff";
+      case ".txt":
+        return "text/plain";
+      case ".doc":
+        return "application/msword";
+      case ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      case ".rtf":
+        return "application/rtf";
+      default:
+        return "application/octet-stream";
+    }
+  };
+
+  const handleOpenActiveDocument = async (documentId: string) => {
+    const target = activeDocuments.find((item) => item.id === documentId);
+    if (!target) {
+      return;
+    }
+
+    try {
+      let encryptedPayloadB64 = target.encryptedPayloadB64;
+      let ivB64 = target.ivB64;
+      let fileExtension = target.fileExtension;
+
+      if ((!encryptedPayloadB64 || !ivB64) && user) {
+        const token = await user.getIdToken();
+        const detailResponse = await fetch(`${API_BASE_URL}/api/evidence/${documentId}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!detailResponse.ok) {
+          throw new Error(`Failed to fetch encrypted resource (${detailResponse.status})`);
+        }
+
+        const detail = (await detailResponse.json()) as EvidencePayloadResponse;
+        encryptedPayloadB64 = detail.encrypted_payload_b64;
+        ivB64 = detail.iv_b64;
+        fileExtension = detail.file_extension;
+      }
+
+      if (!encryptedPayloadB64 || !ivB64) {
+        toast.error("Encrypted resource payload unavailable for this file");
+        return;
+      }
+
+      const decryptedBlob = await decryptEvidencePayload(encryptedPayloadB64, ivB64);
+      const typedBlob = new Blob([decryptedBlob], { type: getMimeTypeFromExtension(fileExtension) });
+      const objectUrl = URL.createObjectURL(typedBlob);
+      window.open(objectUrl, "_blank", "noopener,noreferrer");
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error) {
+      console.error(error);
+      toast.error("Could not open this resource. Use the same browser profile used for upload.");
     }
   };
 
@@ -772,6 +970,7 @@ function ChatApp() {
                 prev.filter((document) => document.id !== documentId)
               )
             }
+            onOpenActiveDocument={handleOpenActiveDocument}
           />
         </div>
       </div>

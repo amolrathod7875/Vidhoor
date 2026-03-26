@@ -23,6 +23,7 @@ interface Props {
     type: "image" | "document";
   }>;
   onRemoveActiveDocument?: (id: string) => void;
+  onOpenActiveDocument?: (id: string) => void;
 }
 
 const MAX_ACTIVE_DOCUMENTS = 5;
@@ -35,6 +36,7 @@ export function ChatInput({
   guestRemaining,
   activeDocuments = [],
   onRemoveActiveDocument,
+  onOpenActiveDocument,
 }: Props) {
   const [text, setText] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -117,7 +119,14 @@ export function ChatInput({
                   )}
                 </span>
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-foreground">{doc.name}</p>
+                  <button
+                    type="button"
+                    onClick={() => onOpenActiveDocument?.(doc.id)}
+                    className="max-w-full truncate text-left text-sm font-medium text-foreground underline-offset-2 hover:underline"
+                    title="Open uploaded resource"
+                  >
+                    {doc.name}
+                  </button>
                   <p className="text-xs text-muted-foreground">
                     {doc.type === "image" ? "Image" : "Document"} attached for grounded chat
                   </p>

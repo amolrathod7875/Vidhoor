@@ -96,6 +96,27 @@ class OracleChatHistoryRepository:
 			CREATE INDEX idx_vidhoor_chat_messages_session
 			ON vidhoor_chat_messages(session_id, created_at)
 			""",
+			"""
+			CREATE TABLE vidhoor_user_evidence (
+				evidence_id VARCHAR2(128) PRIMARY KEY,
+				user_id VARCHAR2(256) NOT NULL,
+				session_id VARCHAR2(128),
+				file_name VARCHAR2(512) NOT NULL,
+				file_extension VARCHAR2(32),
+				encryption_alg VARCHAR2(64),
+				key_id VARCHAR2(256),
+				iv_b64 CLOB,
+				encrypted_payload_b64 CLOB,
+				masked_summary CLOB,
+				masked_analysis CLOB,
+				created_at TIMESTAMP DEFAULT SYSTIMESTAMP,
+				updated_at TIMESTAMP DEFAULT SYSTIMESTAMP
+			)
+			""",
+			"""
+			CREATE INDEX idx_vidhoor_user_evidence_user
+			ON vidhoor_user_evidence(user_id, created_at)
+			""",
 		]
 
 		with self._connect() as connection:
@@ -355,6 +376,159 @@ class OracleChatHistoryRepository:
 						}
 					)
 				return messages
+
+	def save_encrypted_evidence(
+		self,
+		user_id: str,
+		evidence_id: str,
+		file_name: str,
+		file_extension: str,
+		encrypted_payload_b64: str,
+		iv_b64: str,
+		encryption_alg: str,
+		key_id: str | None,
+		masked_summary: str,
+		masked_analysis: str,
+		session_id: str | None = None,
+	) -> None:
+		"""Persist encrypted evidence payload and anonymized OCR/legal text."""
+
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					"""
+					INSERT INTO vidhoor_user_evidence (
+						evidence_id,
+						user_id,
+						session_id,
+						file_name,
+						file_extension,
+						encryption_alg,
+						key_id,
+						iv_b64,
+						encrypted_payload_b64,
+						masked_summary,
+						masked_analysis,
+						created_at,
+						updated_at
+					) VALUES (
+						:evidence_id,
+						:user_id,
+						:session_id,
+						:file_name,
+						:file_extension,
+						:encryption_alg,
+						:key_id,
+						:iv_b64,
+						:encrypted_payload_b64,
+						:masked_summary,
+						:masked_analysis,
+						SYSTIMESTAMP,
+						SYSTIMESTAMP
+					)
+					""",
+					{
+						"evidence_id": evidence_id,
+						"user_id": user_id,
+						"session_id": session_id,
+						"file_name": file_name,
+						"file_extension": file_extension,
+						"encryption_alg": encryption_alg,
+						"key_id": key_id,
+						"iv_b64": iv_b64,
+						"encrypted_payload_b64": encrypted_payload_b64,
+						"masked_summary": masked_summary,
+						"masked_analysis": masked_analysis,
+					},
+				)
+			connection.commit()
+
+	def list_user_evidence(
+		self,
+		user_id: str,
+		limit: int = 100,
+		session_id: str | None = None,
+	) -> list[dict[str, Any]]:
+		"""Return encrypted evidence metadata for a user, optionally filtered by session."""
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					"""
+					SELECT evidence_id, file_name, file_extension, encryption_alg, key_id, session_id, created_at
+					FROM vidhoor_user_evidence
+					WHERE user_id = :user_id
+					  AND (:session_id IS NULL OR session_id = :session_id)
+					ORDER BY created_at DESC
+					FETCH FIRST :limit ROWS ONLY
+					""",
+					{"user_id": user_id, "limit": limit, "session_id": session_id},
+				)
+				rows = cursor.fetchall()
+
+		result: list[dict[str, Any]] = []
+		for evidence_id, file_name, file_extension, encryption_alg, key_id, session_id, created_at in rows:
+			result.append(
+				{
+					"evidence_id": str(evidence_id),
+					"file_name": str(file_name),
+					"file_extension": str(file_extension or ""),
+					"encryption_alg": str(encryption_alg or ""),
+					"key_id": str(key_id or ""),
+					"session_id": str(session_id or ""),
+					"created_at": _iso(created_at),
+				}
+			)
+		return result
+
+	def get_evidence_payload(self, user_id: str, evidence_id: str) -> dict[str, Any] | None:
+		"""Return one encrypted evidence payload owned by the user."""
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					"""
+					SELECT evidence_id, file_name, file_extension, encryption_alg, key_id,
+					       iv_b64, encrypted_payload_b64, masked_summary, masked_analysis,
+					       session_id, created_at
+					FROM vidhoor_user_evidence
+					WHERE user_id = :user_id AND evidence_id = :evidence_id
+					""",
+					{"user_id": user_id, "evidence_id": evidence_id},
+				)
+				row = cursor.fetchone()
+
+		if not row:
+			return None
+
+		(
+			evidence_id,
+			file_name,
+			file_extension,
+			encryption_alg,
+			key_id,
+			iv_b64,
+			encrypted_payload_b64,
+			masked_summary,
+			masked_analysis,
+			session_id,
+			created_at,
+		) = row
+
+		def _lob_to_text(value: Any) -> str:
+			return value.read() if hasattr(value, "read") else str(value or "")
+
+		return {
+			"evidence_id": str(evidence_id),
+			"file_name": str(file_name),
+			"file_extension": str(file_extension or ""),
+			"encryption_alg": str(encryption_alg or ""),
+			"key_id": str(key_id or ""),
+			"iv_b64": _lob_to_text(iv_b64),
+			"encrypted_payload_b64": _lob_to_text(encrypted_payload_b64),
+			"masked_summary": _lob_to_text(masked_summary),
+			"masked_analysis": _lob_to_text(masked_analysis),
+			"session_id": str(session_id or ""),
+			"created_at": _iso(created_at),
+		}
 
 
 def _decode_json(value: Any) -> dict[str, str]:
