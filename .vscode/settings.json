@@ -13,6 +13,11 @@
         "/^\\(C:\\\\Users\\\\amolr\\\\anaconda3\\\\shell\\\\condabin\\\\conda-hook\\.ps1\\) ; conda activate vidhoor311 ; Set-Location D:/vidhoor-legal-copilot/backend ; \\$env:PYTHONPATH='D:/vidhoor-legal-copilot/backend' ; python tmp_rag_check\\.py$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "npm --prefix frontend": true,
+        "/^python -m py_compile backend/main\\.py backend/database\\.py backend/services/draft_mailer\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     },
     "python-envs.defaultEnvManager": "ms-python.python:conda",

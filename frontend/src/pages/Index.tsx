@@ -13,6 +13,7 @@ import {
   ShieldAlert,
   Share2,
   MoreVertical,
+  FileText,
   Pencil,
   Trash2,
   Pin,
@@ -106,9 +107,23 @@ interface HistoryMessageResponse {
   masked_entities: Record<string, string>;
 }
 
+interface DraftGenerateApiResponse {
+  draft_id: string;
+  title: string;
+  application_type: string;
+  draft_content: string;
+  disclaimer: string;
+  email_target?: string | null;
+  email_sent: boolean;
+  email_message: string;
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8001";
 
-let nextId = 100;
+let nextMessageId = 1;
+
+const createMessageId = (): string => `msg-${nextMessageId++}`;
+const createLocalSessionId = (): string => `local-${crypto.randomUUID()}`;
 
 function ChatApp() {
   const { user, logout } = useAuth();
@@ -118,6 +133,7 @@ function ChatApp() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
   const [activeDocuments, setActiveDocuments] = useState<ActiveDocumentContext[]>([]);
   const [tempChat, setTempChat] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
@@ -283,7 +299,7 @@ function ChatApp() {
 
         const data = (await response.json()) as HistoryMessageResponse[];
         const mappedMessages: Message[] = data.map((item) => ({
-          id: String(nextId++),
+          id: createMessageId(),
           role: item.role,
           content: item.content,
         }));
@@ -315,7 +331,7 @@ function ChatApp() {
       options?: Pick<Message, "citations" | "overall_confidence">
     ) => {
       const msg: Message = {
-        id: String(nextId++),
+        id: createMessageId(),
         role,
         content,
         citations: options?.citations,
@@ -337,7 +353,7 @@ function ChatApp() {
 
     if (!sid) {
       const newSession: ChatSession = {
-        id: String(nextId++),
+        id: createLocalSessionId(),
         title: "New Chat",
         messages: [],
         pinned: false,
@@ -426,6 +442,125 @@ function ChatApp() {
     }
   };
 
+  const buildSessionDraftFacts = useCallback((session: ChatSession | null): string => {
+    if (!session || session.messages.length === 0) {
+      return "";
+    }
+
+    const recent = session.messages.slice(-10);
+    return recent
+      .map((item) => `${item.role === "user" ? "User" : "Vidhoor"}: ${item.content}`)
+      .join("\n\n")
+      .trim();
+  }, []);
+
+  const handleGenerateDraft = async () => {
+    if (!user) {
+      setLoginOpen(true);
+      return;
+    }
+
+    const requestedType =
+      window.prompt(
+        "Draft type? (bail_application, legal_notice, police_complaint, consumer_complaint, custom)",
+        "bail_application"
+      ) ?? "bail_application";
+    const normalizedType = requestedType.trim().toLowerCase().replace(/\s+/g, "_");
+    const supportedTypes = new Set([
+      "bail_application",
+      "legal_notice",
+      "police_complaint",
+      "consumer_complaint",
+      "custom",
+    ]);
+    const applicationType = supportedTypes.has(normalizedType) ? normalizedType : "custom";
+
+    const extraFacts =
+      window.prompt(
+        "Add any key facts for this draft (optional). Leave blank to use recent chat context only.",
+        ""
+      ) ?? "";
+
+    let sid = activeId;
+    if (!sid) {
+      const newSession: ChatSession = {
+        id: createLocalSessionId(),
+        title: "New Chat",
+        messages: [],
+        pinned: false,
+      };
+
+      if (tempChat) {
+        setSessions((prev) => [{ ...newSession, title: "⌛ " + newSession.title }, ...prev]);
+      } else {
+        setSessions((prev) => [newSession, ...prev]);
+      }
+
+      sid = newSession.id;
+      setActiveId(sid);
+    }
+
+    const session = sessions.find((item) => item.id === sid) ?? null;
+    const caseFacts = [extraFacts.trim(), buildSessionDraftFacts(session)]
+      .filter((item) => item.length > 0)
+      .join("\n\n")
+      .trim();
+
+    if (!caseFacts) {
+      toast.error("Please provide case facts or add some chat context first");
+      return;
+    }
+
+    setIsGeneratingDraft(true);
+    setIsTyping(true);
+
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch(`${API_BASE_URL}/api/drafts/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          "X-User-Email": user.email ?? "",
+        },
+        body: JSON.stringify({
+          application_type: applicationType,
+          case_facts: caseFacts,
+          session_id: sid,
+          auto_email_to_user: true,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Draft generation failed with status ${response.status}`);
+      }
+
+      const data = (await response.json()) as DraftGenerateApiResponse;
+      const assistantContent = [
+        `### ${data.title}`,
+        data.draft_content,
+        "",
+        `> ${data.disclaimer}`,
+        "",
+        data.email_message,
+      ].join("\n");
+
+      addMessage("assistant", assistantContent, sid);
+      toast.success(data.email_sent ? "Draft created and mailed" : "Draft created");
+    } catch (error) {
+      console.error(error);
+      addMessage(
+        "assistant",
+        "I couldn't generate the legal draft right now. Please retry with clearer facts.",
+        sid
+      );
+      toast.error("Draft generation failed");
+    } finally {
+      setIsTyping(false);
+      setIsGeneratingDraft(false);
+    }
+  };
+
   const handleUploadFiles = async (files: File[]) => {
     if (files.length === 0) {
       return;
@@ -435,7 +570,7 @@ function ChatApp() {
 
     if (!sid) {
       const newSession: ChatSession = {
-        id: String(nextId++),
+        id: createLocalSessionId(),
         title: "New Chat",
         messages: [],
         pinned: false,
@@ -501,7 +636,7 @@ function ChatApp() {
         setActiveDocuments((prev) => [
           ...prev,
           {
-            id: data.evidence_id || String(nextId++),
+            id: data.evidence_id || `evidence-${createMessageId()}`,
             name: file.name,
             type: isImage ? "image" : "document",
             contextText: extractedContext || data.summary,
@@ -843,13 +978,24 @@ function ChatApp() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      disabled={!activeSession}
+                      disabled={!activeSession && !user}
                       className="h-9 w-9 rounded-full"
                     >
                       <MoreVertical className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-40 rounded-xl">
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        void handleGenerateDraft();
+                      }}
+                      className="gap-2"
+                      disabled={!user || isGeneratingDraft}
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                      {isGeneratingDraft ? "Drafting..." : "Draft Application"}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
                     <DropdownMenuItem
                       onSelect={() => {
                         if (!activeSession) return;

@@ -1,0 +1,208 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Vidhoor Legal Copilot - Backend Technology FAQ}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{enumerate}
+\item \textbf{Question:} What is the primary web framework used in the Vidhoor Legal Copilot backend, and what version is specified in requirements.txt?
+\\ \textbf{Answer:} The primary web framework is FastAPI, version 0.109.2 as specified in \texttt{backend/requirements.txt}.
+
+\item \textbf{Question:} How does the application handle Cross-Origin Resource Sharing (CORS) to enable communication with the frontend?
+\\ \textbf{Answer:} The application configures CORS middleware in \texttt{backend/main.py} (lines 33-46) to allow specific origins including localhost ports 3000, 5173, and 8080, with credentials enabled and all methods/headers allowed.
+
+\item \textbf{Question:} Which LLM provider and model is primarily used for generating legal responses, and how is fallback implemented?
+\\ \textbf{Answer:} The system uses Cerebras LLM with the primary model "llama3.1-8b". Fallback implementation is in \texttt{backend/llm\_engine.py} where \texttt{\_build\_model\_candidates} creates a list including "llama3.1-8b" and "gpt-oss-120b", and the \texttt{\_switch\_model} method tries alternatives if the primary fails.
+
+\item \textbf{Question:} What vector database is used for storing and retrieving legal embeddings, and how is it accessed?
+\\ \textbf{Answer:} ChromaDB is used as the vector database. It's accessed via HTTP client in \texttt{backend/chroma\_manager.py} (lines 286-292) connecting to a Chroma server at configurable host/port (default localhost:8000).
+
+\item \textbf{Question:} How does the system implement hybrid retrieval combining vector search with BM25 ranking?
+\\ \textbf{Answer:} Hybrid retrieval combines vector search (ChromaDB) with BM25 ranking from Oracle persistence. Weights are defined as HYBRID\_VECTOR\_WEIGHT = 0.5 and HYBRID\_BM25\_WEIGHT = 0.5 in \texttt{backend/chroma\_manager.py} (lines 38-39). The BM25 index is warmed from Oracle chunks and used alongside vector search.
+
+\item \textbf{Question:} What Oracle database features are utilized for persisting chat history and evidence?
+\\ \textbf{Answer:} The system uses Oracle Autonomous Database with:
+\begin{itemize}
+\item Tables for chat sessions (\texttt{vidhoor\_chat\_sessions}) and messages (\texttt{vidhoor\_chat\_messages})
+\item Tables for evidence storage (\texttt{vidhoor\_user\_evidence})
+\item CLOB fields for storing large text content
+\item MERGE statements for upsert operations
+\item Connection pooling with Oracle Wallet support
+\item Schema initialization with backward compatibility
+\end{itemize}
+
+\item \textbf{Question:} How are PDF documents processed for text extraction in the OCR pipeline?
+\\ \textbf{Answer:} PDF processing uses PyPDF (specified in requirements.txt) and is handled by \texttt{VisionOCRService} in \texttt{backend/services/ocr\_vision.py}. The service extracts text from PDF pages and processes them through OCR and translation pipelines.
+
+\item \textbf{Question:} What PII (Personally Identifiable Information) protection mechanisms are implemented in the system?
+\\ \textbf{Answer:} PII protection is implemented via:
+\begin{itemize}
+\item \texttt{PIIVault} class in \texttt{backend/pii\_vault.py} using Microsoft Presidio
+\item Entity detection and anonymization before LLM processing
+\item Masking of sensitive information in chat messages and evidence
+\item Separate storage of PII mappings for potential unmasking by frontend
+\end{itemize}
+
+\item \textbf{Question:} How does the application handle multilingual support, particularly for translating non-English legal documents?
+\\ \textbf{Answer:} Multilingual support uses:
+\begin{itemize}
+\item \texttt{langdetect} for language detection
+\item Helsinki NLP translation model via \texttt{services/translate\_helsinki.py}
+\item Translation of OCR-extracted text to English for processing
+\item Language detection in OCR results (\texttt{OCRPageResult.detected\_language})
+\end{itemize}
+
+\item \textbf{Question:} What embedding models are used for converting legal text to vectors, and what fallback strategy exists?
+\\ \textbf{Answer:} Primary embedding model is BAAI/bge-m3 with fallback to all-MiniLM-L6-v2. The fallback strategy is implemented in \texttt{backend/chroma\_manager.py} \texttt{\_build\_embedding\_function} method (lines 312-338) which tries the primary model first, then falls back on failure.
+
+\item \textbf{Question:} How are legal citations structured and validated in the system?
+\\ \textbf{Answer:} Legal citations are structured using the \texttt{Citation} Pydantic model (lines 60-69 in \texttt{backend/main.py}) with fields for doc\_id, title, source, source\_url, section, page, snippet, confidence, and last\_updated. Validation occurs through reference matching functions like \texttt{\_references\_match} and \texttt{\_reference\_match\_for\_fir}.
+
+\item \textbf{Question:} What security measures are in place for handling encrypted evidence files?
+\\ \textbf{Answer:} Evidence security includes:
+\begin{itemize}
+\item Encryption using AES-GCM (via \texttt{evidenceCrypto.ts} frontend, but backend handles storage)
+\item Storage of encrypted payloads, IVs, and metadata in Oracle DB
+\item Key management through key\_id references
+\item Separation of encrypted content from masked summaries/analyses
+\item Access control via user\_id and session\_id foreign keys
+\end{itemize}
+
+\item \textbf{Question:} How does the system determine if a user query is related to legal matters?
+\\ \textbf{Answer:} Legal query detection uses:
+\begin{itemize}
+\item Keyword matching against \texttt{LEGAL\_QUERY\_KEYWORDS} set (lines 149-177 in \texttt{backend/main.py})
+\item Regex pattern matching for article/section references (line 365-366)
+\item Implemented in \texttt{is\_legal\_query()} function (lines 355-368)
+\end{itemize}
+
+\item \textbf{Question:} What is the purpose of the BM25Okapi implementation and how is it integrated with ChromaDB?
+\\ \textbf{Answer:} BM25Okapi provides lexical ranking to complement semantic vector search. Integration occurs through:
+\begin{itemize}
+\item Persistence of chunks to Oracle via \texttt{OracleChunkRepository}
+\item In-memory BM25 index built from Oracle chunks (\texttt{refresh\_bm25\_from\_oracle})
+\item Hybrid scoring combining vector distance and BM25 scores in \texttt{retrieve\_context}
+\end{itemize}
+
+\item \textbf{Question:} How are legal acts (like BNS, BNSS, BSA) identified and filtered during retrieval?
+\\ \textbf{Answer:} Legal act identification uses:
+\begin{itemize}
+\item \texttt{infer\_act\_filter()} and \texttt{infer\_act\_filters()} functions (lines 297-352)
+\item Pattern matching for act names and abbreviations (BNS, BNSS, BSA)
+\item Special handling for bail-related queries to default to BNSS
+\item Filtering in \texttt{\_source\_matches\_act\_filter()} to prevent cross-contamination
+\end{itemize}
+
+\item \textbf{Question:} What role does the PII Vault play in the evidence handling workflow?
+\\ \textbf{Answer:} The PII Vault:
+\begin{itemize}
+\item Detects and masks PII in evidence before storage
+\item Maintains mapping between original and masked values
+\item Provides unmasking capabilities for authorized frontend display
+\item Is invoked during OCR processing and evidence saving workflows
+\end{itemize}
+
+\item \textbf{Question:} How does the system manage session persistence and chat history in Oracle Database?
+\\ \textbf{Answer:} Session management uses:
+\begin{itemize}
+\item \texttt{vidhoor\_chat\_sessions} table for session metadata
+\item \texttt{vidhoor\_chat\_messages} table for message history with CLOB content
+\item Oracle MERGE operations for session creation/update
+\item Timestamps for tracking creation and updates
+\item Foreign key constraints maintaining session-message relationships
+\item Pinned session feature for user preferences
+\end{itemize}
+
+\item \textbf{Question:} What is the function of the \texttt{infer\_act\_filter} and \texttt{infer\_act\_filters} functions?
+\\ \textbf{Answer:} These functions analyze user queries to determine relevant legal acts for retrieval filtering:
+\begin{itemize}
+\item \texttt{infer\_act\_filter()} returns single most likely act
+\item \texttt{infer\_act\_filters()} returns list of possible acts
+\item Both use keyword and pattern matching to identify BNS, BNSS, BSA, Constitution
+\item Special handling for bail queries to prioritize BNSS
+\end{itemize}
+
+\item \textbf{Question:} How does the system handle OCR processing for legal documents, including language detection?
+\\ \textbf{Answer:} OCR processing flow:
+\begin{enumerate}
+\item PDF/image input processed by \texttt{VisionOCRService}
+\item Text extraction per page with language detection (\texttt{langdetect})
+\item Non-English text translated to English via Helsinki model
+\item Masking of PII in extracted text
+\item Storage of both original and translated/masked results
+\item Language tracking in \texttt{OCRPageResult.detected\_language}
+\end{enumerate}
+
+\item \textbf{Question:} What is the purpose of the \texttt{offence\_guidance\_rules} and how are they applied?
+\\ \textbf{Answer:} Offence guidance rules provide practical legal guidance when strict citation grounding isn't possible:
+\begin{itemize}
+\item Defined in \texttt{OFFENCE\_GUIDANCE\_RULES} (lines 189-210)
+\item Contain patterns, applicable acts, section hints, and guidance bullet points
+\item Applied via \texttt{\_detect\_offence\_rule()} and \texttt{\_build\_offence\_guidance\_markdown()}
+\item Used in OCR analysis when citation confidence is low
+\end{itemize}
+
+\item \textbf{Question:} How are legal chunks ingested into the system, and what metadata is associated with them?
+\\ \textbf{Answer:} Ingestion process:
+\begin{enumerate}
+\item Legal texts chunked via \texttt{ingest\_legal\_resources.py} or \texttt{ingest\_constitution.py}
+\item Metadata includes: source, act, section/article, status
+\item Stored in ChromaDB with vector embeddings
+\item Persisted to Oracle for BM25 recovery via \texttt{\_persist\_chunks\_for\_bm25}
+\item Chunk IDs generated deterministically from content hash
+\end{enumerate}
+
+\item \textbf{Question:} What is the role of the \texttt{OracleChunkRepository} in the Chroma manager?
+\\ \textbf{Answer:} The \texttt{OracleChunkRepository}:
+\begin{itemize}
+\item Persists legal chunks to Oracle Database for BM25 recovery
+\item Provides \texttt{load\_chunks()} and \texttt{upsert\_chunks()} methods
+\item Initializes schema for chunk storage table
+\item Enables rebuilding BM25 index from persistent storage
+\item Acts as backup when ChromaDB needs reconstruction
+\end{itemize}
+
+\item \textbf{Question:} How does the system ensure that LLM responses are strictly grounded in retrieved legal context?
+\\ \textbf{Answer:} Response grounding is ensured by:
+\begin{itemize}
+\item Strict system prompt in \texttt{LLMEngine.prompt} (lines 78-116)
+\item Instruction to ONLY answer using provided legal context
+\item Requirement to say context is insufficient if answer not present
+\item Prohibition against hallucination or inferring beyond exact matches
+\item Structured response format with specific sections and bullet points
+\item Post-processing to enforce bullet points under subheadings
+\end{itemize}
+
+\item \textbf{Question:} What environment variables are required for configuring the Oracle Autonomous Database connection?
+\\ \textbf{Answer:} Required Oracle environment variables:
+\begin{itemize}
+\item \texttt{ORACLE\_USER} - database username
+\item \texttt{ORACLE\_PASSWORD} - database password
+\item \texttt{ORACLE\_DSN} - database connection string
+\item Optional: \texttt{ORACLE\_CONFIG\_DIR}, \texttt{ORACLE\_WALLET\_LOCATION}, \texttt{ORACLE\_WALLET\_PASSWORD}
+\end{itemize}
+Used in \texttt{OracleChatHistoryRepository.\_\_init\_\_()} (lines 22-36).
+
+\item \textbf{Question:} How does the system handle model switching and fallback when the primary Cerebras model is unavailable?
+\\ \textbf{Answer:} Model fallback mechanism:
+\begin{itemize}
+\item \texttt{\_build\_model\_candidates()} creates ordered list: [primary\_model, "llama3.1-8b", "gpt-oss-120b"]
+\item \texttt{\_switch\_model()} attempts to initialize alternative models
+\item Generation methods (\texttt{generate\_legal\_response}, etc.) iterate through candidates
+\item On model\_not\_found errors, logs warning and tries next candidate
+\item Falls back to seed title generation if all models fail
+\end{itemize}
+\end{enumerate}
+
+\end{document}

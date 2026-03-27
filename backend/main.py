@@ -6,6 +6,7 @@ from typing import Any, Optional
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -15,6 +16,7 @@ from chroma_manager import ChromaManager
 from database import OracleChatHistoryRepository
 from llm_engine import LLMEngine
 from pii_vault import PIIVault
+from services.draft_mailer import send_legal_draft_email
 from services.ocr_vision import VisionOCRService
 from services.translate_helsinki import translate_pages_to_english
 
@@ -138,6 +140,35 @@ class UpdateSessionRequest(BaseModel):
     pinned: bool | None = None
 
 
+class DraftGenerateRequest(BaseModel):
+    application_type: str = "bail_application"
+    case_facts: str
+    session_id: Optional[str] = None
+    auto_email_to_user: bool = True
+
+
+class DraftGenerateResponse(BaseModel):
+    draft_id: str
+    title: str
+    application_type: str
+    draft_content: str
+    disclaimer: str
+    email_target: str | None = None
+    email_sent: bool = False
+    email_message: str = ""
+
+
+class DraftEmailRequest(BaseModel):
+    recipient_email: str | None = None
+
+
+class DraftEmailResponse(BaseModel):
+    draft_id: str
+    sent: bool
+    recipient_email: str
+    message: str
+
+
 _chroma_manager: Optional[ChromaManager] = None
 _llm_engine: Optional[LLMEngine] = None
 _pii_vault: Optional[PIIVault] = None
@@ -183,6 +214,22 @@ BAIL_QUERY_KEYWORDS = {
     "non bailable",
     "custody",
     "remand",
+}
+
+
+DRAFT_DISCLAIMER = (
+    "This is an AI-generated legal draft for assistance only and is not a substitute for "
+    "advice from a licensed advocate. Verify facts, sections, court details, and jurisdiction "
+    "before filing or sending."
+)
+
+
+APPLICATION_TYPE_LABELS: dict[str, str] = {
+    "bail_application": "Bail Application",
+    "legal_notice": "Legal Notice",
+    "police_complaint": "Police Complaint",
+    "consumer_complaint": "Consumer Complaint",
+    "custom": "Legal Draft",
 }
 
 
@@ -244,6 +291,75 @@ def _build_offence_guidance_markdown(text: str, references: list[str]) -> str:
         f"{bullet_points}\n"
         "- Note: This is practical legal guidance; final section applicability must be confirmed from the latest official bare act and case facts."
     )
+
+
+def _normalize_application_type(value: str | None) -> str:
+    """Normalize incoming application type to supported values."""
+    normalized = re.sub(r"[^a-z_]", "", str(value or "").strip().lower())
+    return normalized if normalized in APPLICATION_TYPE_LABELS else "custom"
+
+
+def _build_legal_draft_prompt(
+    application_type: str,
+    case_facts_masked: str,
+    session_context_masked: str,
+) -> str:
+    """Create prompt for legal draft generation with safety guardrails."""
+    app_label = APPLICATION_TYPE_LABELS.get(application_type, "Legal Draft")
+    bailable_note = (
+        "If this is a bail draft, first assess whether facts suggest bailable vs non-bailable context. "
+        "If uncertain, explicitly say uncertainty and include placeholders for advocate verification."
+        if application_type == "bail_application"
+        else ""
+    )
+
+    return (
+        "You are Vidhoor, assisting with legal drafting in India. "
+        "Generate a practical draft document in formal legal style, using placeholders where facts are missing. "
+        "Never claim filing has happened. Do not fabricate case numbers, dates, or addresses.\n\n"
+        f"Draft type: {app_label}\n"
+        f"Case facts from user:\n{case_facts_masked[:12000]}\n\n"
+        f"Recent conversation context (optional):\n{session_context_masked[:6000]}\n\n"
+        f"{bailable_note}\n\n"
+        "Output markdown with this structure:\n"
+        "## Draft Title\n"
+        "## Parties\n"
+        "## Facts\n"
+        "## Legal Grounds\n"
+        "## Prayer/Relief Sought\n"
+        "## Verification\n"
+        "## Missing Details To Fill\n"
+        "- bullet list\n"
+    )
+
+
+def _build_draft_email_subject(application_type: str, draft_title: str) -> str:
+    """Build concise email subject for draft delivery."""
+    label = APPLICATION_TYPE_LABELS.get(application_type, "Legal Draft")
+    title = " ".join((draft_title or "").split())[:80]
+    return f"Vidhoor Draft: {label} - {title or 'Review Required'}"
+
+
+def _extract_recent_session_context(user_id: str, session_id: str | None, limit: int = 8) -> str:
+    """Collect recent user/assistant messages for draft grounding."""
+    if not session_id:
+        return ""
+
+    try:
+        rows = get_chat_repo().get_session_messages(user_id=user_id, session_id=session_id)
+    except Exception:
+        return ""
+
+    if not rows:
+        return ""
+
+    selected = rows[-limit:]
+    lines = [
+        f"{str(item.get('role') or 'user').upper()}: {str(item.get('content') or '').strip()}"
+        for item in selected
+        if str(item.get("content") or "").strip()
+    ]
+    return "\n\n".join(lines)
 
 
 def get_chroma_manager() -> ChromaManager:
@@ -596,7 +712,10 @@ def _retrieve_legal_citations(masked_query: str) -> tuple[list[Citation], Option
     return citations, overall_confidence
 
 # --- Dependency to verify Firebase Auth Token (Mocked for now) ---
-async def verify_token(authorization: str = Header(None)):
+async def verify_token(
+    authorization: str = Header(None),
+    x_user_email: str | None = Header(default=None, alias="X-User-Email"),
+):
     if not authorization:
         # For Guest Mode, we might not have a token
         return None 
@@ -609,7 +728,7 @@ async def verify_token(authorization: str = Header(None)):
     if not token:
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
-    return {"uid": "mock_user_123"}
+    return {"uid": "mock_user_123", "email": str(x_user_email or "").strip()}
 
 
 def get_required_user_id(user: dict[str, Any] | None) -> str:
@@ -871,6 +990,140 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/drafts/generate", response_model=DraftGenerateResponse)
+async def generate_legal_draft(
+    request: DraftGenerateRequest,
+    user: dict = Depends(verify_token),
+):
+    """Generate and persist legal draft, then optionally email it to the authenticated user."""
+    user_id = get_required_user_id(user)
+    case_facts = (request.case_facts or "").strip()
+    if not case_facts:
+        raise HTTPException(status_code=400, detail="case_facts is required")
+
+    application_type = _normalize_application_type(request.application_type)
+    pii_vault = get_pii_vault()
+    llm_engine = get_llm_engine()
+
+    masked_case_facts, pii_map = pii_vault.mask_text(case_facts)
+    recent_context = _extract_recent_session_context(user_id=user_id, session_id=request.session_id)
+    masked_context, _ = pii_vault.mask_text(recent_context) if recent_context else ("", {})
+
+    draft_prompt = _build_legal_draft_prompt(
+        application_type=application_type,
+        case_facts_masked=masked_case_facts,
+        session_context_masked=masked_context,
+    )
+
+    try:
+        generated_masked = llm_engine.generate_general_response(draft_prompt)
+    except Exception as exc:
+        logger.exception("Draft generation failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Draft generation failed")
+
+    draft_content = pii_vault.unmask_text(generated_masked, pii_map)
+    title = f"{APPLICATION_TYPE_LABELS.get(application_type, 'Legal Draft')} - {datetime.utcnow().date().isoformat()}"
+    draft_id = f"draft_{uuid4().hex}"
+    email_id = str(user.get("email") or "").strip() or None
+
+    chat_repo = get_chat_repo()
+    chat_repo.save_user_draft(
+        user_id=user_id,
+        draft_id=draft_id,
+        email_id=email_id,
+        application_type=application_type,
+        title=title,
+        draft_content=draft_content,
+        session_id=request.session_id,
+        draft_meta={
+            "source": "agentic_drafting",
+            "auto_email_requested": bool(request.auto_email_to_user),
+        },
+    )
+
+    email_target = email_id
+    email_sent = False
+    email_message = "Draft generated successfully."
+    if request.auto_email_to_user and email_target:
+        sent, delivery_message = send_legal_draft_email(
+            recipient_email=email_target,
+            subject=_build_draft_email_subject(application_type, title),
+            draft_title=title,
+            draft_content=draft_content,
+            disclaimer=DRAFT_DISCLAIMER,
+        )
+        email_sent = sent
+        email_message = delivery_message
+        chat_repo.mark_draft_delivery(
+            user_id=user_id,
+            draft_id=draft_id,
+            delivery_status="sent" if sent else "email_failed",
+            last_delivery_error="" if sent else delivery_message,
+            emailed_at=sent,
+        )
+    elif request.auto_email_to_user and not email_target:
+        email_message = "Draft generated, but user email is unavailable."
+        chat_repo.mark_draft_delivery(
+            user_id=user_id,
+            draft_id=draft_id,
+            delivery_status="email_skipped",
+            last_delivery_error="User email unavailable from auth context",
+            emailed_at=False,
+        )
+
+    return DraftGenerateResponse(
+        draft_id=draft_id,
+        title=title,
+        application_type=application_type,
+        draft_content=draft_content,
+        disclaimer=DRAFT_DISCLAIMER,
+        email_target=email_target,
+        email_sent=email_sent,
+        email_message=email_message,
+    )
+
+
+@app.post("/api/drafts/{draft_id}/email", response_model=DraftEmailResponse)
+async def email_saved_draft(
+    draft_id: str,
+    request: DraftEmailRequest,
+    user: dict = Depends(verify_token),
+):
+    """Email an already-generated draft to user-selected or authenticated email."""
+    user_id = get_required_user_id(user)
+    chat_repo = get_chat_repo()
+    draft = chat_repo.get_user_draft(user_id=user_id, draft_id=draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    recipient_email = (request.recipient_email or "").strip() or str(draft.get("email_id") or "").strip() or str(user.get("email") or "").strip()
+    if not recipient_email:
+        raise HTTPException(status_code=400, detail="Recipient email is required")
+
+    sent, message = send_legal_draft_email(
+        recipient_email=recipient_email,
+        subject=_build_draft_email_subject(str(draft.get("application_type") or "custom"), str(draft.get("title") or "")),
+        draft_title=str(draft.get("title") or "Legal Draft"),
+        draft_content=str(draft.get("draft_content") or ""),
+        disclaimer=DRAFT_DISCLAIMER,
+    )
+
+    chat_repo.mark_draft_delivery(
+        user_id=user_id,
+        draft_id=draft_id,
+        delivery_status="sent" if sent else "email_failed",
+        last_delivery_error="" if sent else message,
+        emailed_at=sent,
+    )
+
+    return DraftEmailResponse(
+        draft_id=draft_id,
+        sent=sent,
+        recipient_email=recipient_email,
+        message=message,
+    )
 
 
 @app.post("/api/fir/analyze", response_model=OCRAnalyzeResponse)

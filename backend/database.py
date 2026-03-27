@@ -117,6 +117,27 @@ class OracleChatHistoryRepository:
 			CREATE INDEX idx_vidhoor_user_evidence_user
 			ON vidhoor_user_evidence(user_id, created_at)
 			""",
+			"""
+			CREATE TABLE vidhoor_user_drafts (
+				draft_id VARCHAR2(128) PRIMARY KEY,
+				user_id VARCHAR2(256) NOT NULL,
+				email_id VARCHAR2(320),
+				session_id VARCHAR2(128),
+				application_type VARCHAR2(64) NOT NULL,
+				title VARCHAR2(512),
+				draft_content CLOB NOT NULL,
+				draft_meta_json CLOB,
+				delivery_status VARCHAR2(64) DEFAULT 'generated' NOT NULL,
+				last_delivery_error VARCHAR2(1000),
+				emailed_at TIMESTAMP,
+				created_at TIMESTAMP DEFAULT SYSTIMESTAMP,
+				updated_at TIMESTAMP DEFAULT SYSTIMESTAMP
+			)
+			""",
+			"""
+			CREATE INDEX idx_vidhoor_user_drafts_user
+			ON vidhoor_user_drafts(user_id, created_at)
+			""",
 		]
 
 		with self._connect() as connection:
@@ -529,6 +550,153 @@ class OracleChatHistoryRepository:
 			"session_id": str(session_id or ""),
 			"created_at": _iso(created_at),
 		}
+
+	def save_user_draft(
+		self,
+		user_id: str,
+		draft_id: str,
+		email_id: str | None,
+		application_type: str,
+		title: str,
+		draft_content: str,
+		session_id: str | None = None,
+		draft_meta: dict[str, Any] | None = None,
+	) -> None:
+		"""Persist one generated legal draft for a user."""
+		draft_meta_json = json.dumps(draft_meta or {}, ensure_ascii=False)
+
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					"""
+					INSERT INTO vidhoor_user_drafts (
+						draft_id,
+						user_id,
+						email_id,
+						session_id,
+						application_type,
+						title,
+						draft_content,
+						draft_meta_json,
+						delivery_status,
+						created_at,
+						updated_at
+					) VALUES (
+						:draft_id,
+						:user_id,
+						:email_id,
+						:session_id,
+						:application_type,
+						:title,
+						:draft_content,
+						:draft_meta_json,
+						'generated',
+						SYSTIMESTAMP,
+						SYSTIMESTAMP
+					)
+					""",
+					{
+						"draft_id": draft_id,
+						"user_id": user_id,
+						"email_id": email_id,
+						"session_id": session_id,
+						"application_type": application_type,
+						"title": title,
+						"draft_content": draft_content,
+						"draft_meta_json": draft_meta_json,
+					},
+				)
+			connection.commit()
+
+	def get_user_draft(self, user_id: str, draft_id: str) -> dict[str, Any] | None:
+		"""Return one generated draft owned by the user."""
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					"""
+					SELECT draft_id, user_id, email_id, session_id, application_type,
+					       title, draft_content, draft_meta_json, delivery_status,
+					       last_delivery_error, emailed_at, created_at, updated_at
+					FROM vidhoor_user_drafts
+					WHERE user_id = :user_id AND draft_id = :draft_id
+					""",
+					{"user_id": user_id, "draft_id": draft_id},
+				)
+				row = cursor.fetchone()
+
+		if not row:
+			return None
+
+		(
+			draft_id,
+			user_id,
+			email_id,
+			session_id,
+			application_type,
+			title,
+			draft_content,
+			draft_meta_json,
+			delivery_status,
+			last_delivery_error,
+			emailed_at,
+			created_at,
+			updated_at,
+		) = row
+
+		content = draft_content.read() if hasattr(draft_content, "read") else str(draft_content or "")
+		draft_meta = _decode_json(draft_meta_json)
+
+		return {
+			"draft_id": str(draft_id),
+			"user_id": str(user_id),
+			"email_id": str(email_id or ""),
+			"session_id": str(session_id or ""),
+			"application_type": str(application_type or ""),
+			"title": str(title or ""),
+			"draft_content": content,
+			"draft_meta": draft_meta,
+			"delivery_status": str(delivery_status or "generated"),
+			"last_delivery_error": str(last_delivery_error or ""),
+			"emailed_at": _iso(emailed_at),
+			"created_at": _iso(created_at),
+			"updated_at": _iso(updated_at),
+		}
+
+	def mark_draft_delivery(
+		self,
+		user_id: str,
+		draft_id: str,
+		delivery_status: str,
+		last_delivery_error: str | None = None,
+		emailed_at: bool = False,
+	) -> bool:
+		"""Update delivery status for a generated draft."""
+		updates = ["delivery_status = :delivery_status", "updated_at = SYSTIMESTAMP"]
+		params: dict[str, Any] = {
+			"user_id": user_id,
+			"draft_id": draft_id,
+			"delivery_status": delivery_status,
+			"last_delivery_error": (last_delivery_error or "")[:900],
+		}
+
+		updates.append("last_delivery_error = :last_delivery_error")
+		if emailed_at:
+			updates.append("emailed_at = SYSTIMESTAMP")
+
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					f"""
+					UPDATE vidhoor_user_drafts
+					SET {', '.join(updates)}
+					WHERE user_id = :user_id AND draft_id = :draft_id
+					""",
+					params,
+				)
+				updated = cursor.rowcount > 0
+			connection.commit()
+
+		return updated
 
 
 def _decode_json(value: Any) -> dict[str, str]:
