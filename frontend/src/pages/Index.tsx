@@ -14,6 +14,8 @@ import {
   Share2,
   MoreVertical,
   FileText,
+  Download,
+  Mail,
   Pencil,
   Trash2,
   Pin,
@@ -118,12 +120,54 @@ interface DraftGenerateApiResponse {
   email_message: string;
 }
 
+interface DraftRecordApiResponse {
+  draft_id: string;
+  user_id: string;
+  email_id: string;
+  session_id: string;
+  application_type: string;
+  title: string;
+  draft_content: string;
+  draft_meta: Record<string, unknown>;
+  delivery_status: string;
+  last_delivery_error: string;
+  emailed_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+type DraftFlowState =
+  | { step: "idle" }
+  | { step: "awaitingType"; sessionId: string }
+  | { step: "awaitingFacts"; sessionId: string; applicationType: string };
+
+const SUPPORTED_DRAFT_TYPES = new Set([
+  "bail_application",
+  "legal_notice",
+  "police_complaint",
+  "consumer_complaint",
+  "custom",
+]);
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8001";
 
 let nextMessageId = 1;
 
 const createMessageId = (): string => `msg-${nextMessageId++}`;
 const createLocalSessionId = (): string => `local-${crypto.randomUUID()}`;
+
+const toPrintableText = (value: string): string => {
+  let text = String(value || "").replace(/\r\n/g, "\n");
+  text = text.replace(/^#{1,6}\s*/gm, "");
+  text = text.replace(/\*\*(.*?)\*\*/g, "$1");
+  text = text.replace(/__(.*?)__/g, "$1");
+  text = text.replace(/`(.*?)`/g, "$1");
+  text = text.replace(/^\s*[-*]\s+/gm, "• ");
+  text = text.replace(/\[(?:[A-Z0-9_'\s]+)\]/g, "");
+  text = text.replace(/[ \t]+/g, " ");
+  text = text.replace(/\n{3,}/g, "\n\n");
+  return text.trim();
+};
 
 function ChatApp() {
   const { user, logout } = useAuth();
@@ -134,7 +178,10 @@ function ChatApp() {
   const [isTyping, setIsTyping] = useState(false);
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
+  const [isLoadingDraftHistory, setIsLoadingDraftHistory] = useState(false);
   const [activeDocuments, setActiveDocuments] = useState<ActiveDocumentContext[]>([]);
+  const [draftHistory, setDraftHistory] = useState<DraftRecordApiResponse[]>([]);
+  const [draftFlow, setDraftFlow] = useState<DraftFlowState>({ step: "idle" });
   const [tempChat, setTempChat] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const prevTempChat = useRef(tempChat);
@@ -153,6 +200,8 @@ function ChatApp() {
     if (prevTempChat.current !== tempChat) {
       setActiveId(null);
       setActiveDocuments([]);
+      setDraftHistory([]);
+      setDraftFlow({ step: "idle" });
       prevTempChat.current = tempChat;
     }
   }, [tempChat]);
@@ -323,6 +372,42 @@ function ChatApp() {
     [user]
   );
 
+  const fetchSessionDrafts = useCallback(
+    async (sessionId: string) => {
+      if (!user || tempChat) {
+        setDraftHistory([]);
+        return;
+      }
+
+      setIsLoadingDraftHistory(true);
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch(
+          `${API_BASE_URL}/api/drafts?session_id=${encodeURIComponent(sessionId)}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`Failed to load draft history (${response.status})`);
+        }
+
+        const data = (await response.json()) as DraftRecordApiResponse[];
+        setDraftHistory(data);
+      } catch (error) {
+        console.error(error);
+        setDraftHistory([]);
+      } finally {
+        setIsLoadingDraftHistory(false);
+      }
+    },
+    [user, tempChat]
+  );
+
   const addMessage = useCallback(
     (
       role: Message["role"],
@@ -349,31 +434,37 @@ function ChatApp() {
   );
 
   const handleSend = async (text: string) => {
-    let sid = activeId;
-
-    if (!sid) {
-      const newSession: ChatSession = {
-        id: createLocalSessionId(),
-        title: "New Chat",
-        messages: [],
-        pinned: false,
-      };
-
-      if (tempChat) {
-        // Temporary chat — keep in state but mark as hidden from sidebar
-        setSessions((prev) => [
-          { ...newSession, title: "⌛ " + newSession.title },
-          ...prev,
-        ]);
-      } else {
-        setSessions((prev) => [newSession, ...prev]);
-      }
-
-      sid = newSession.id;
-      setActiveId(sid);
-    }
+    let sid = ensureActiveSession();
 
     addMessage("user", text, sid);
+
+    if (draftFlow.step !== "idle") {
+      if (draftFlow.sessionId !== sid) {
+        setDraftFlow({ step: "idle" });
+      } else if (draftFlow.step === "awaitingType") {
+        const applicationType = normalizeDraftType(text);
+        if (!applicationType) {
+          addMessage(
+            "assistant",
+            "Please enter one exact draft type: bail_application, legal_notice, police_complaint, consumer_complaint, or custom.",
+            sid
+          );
+          return;
+        }
+
+        setDraftFlow({ step: "awaitingFacts", sessionId: sid, applicationType });
+        addMessage(
+          "assistant",
+          "Now share the key case facts. If you want me to use only existing chat context, reply: use chat context",
+          sid
+        );
+        return;
+      } else if (draftFlow.step === "awaitingFacts") {
+        const extraFacts = text.trim().toLowerCase() === "use chat context" ? "" : text;
+        await generateDraftForSession(sid, draftFlow.applicationType, extraFacts);
+        return;
+      }
+    }
 
     // Guest mode: decrement counter only when unauthenticated
     if (!user) {
@@ -454,111 +545,129 @@ function ChatApp() {
       .trim();
   }, []);
 
+  const normalizeDraftType = useCallback((value: string): string | null => {
+    const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
+    return SUPPORTED_DRAFT_TYPES.has(normalized) ? normalized : null;
+  }, []);
+
+  const ensureActiveSession = useCallback((): string => {
+    let sid = activeId;
+    if (sid) {
+      return sid;
+    }
+
+    const newSession: ChatSession = {
+      id: createLocalSessionId(),
+      title: "New Chat",
+      messages: [],
+      pinned: false,
+    };
+
+    if (tempChat) {
+      setSessions((prev) => [{ ...newSession, title: "⌛ " + newSession.title }, ...prev]);
+    } else {
+      setSessions((prev) => [newSession, ...prev]);
+    }
+
+    sid = newSession.id;
+    setActiveId(sid);
+    return sid;
+  }, [activeId, tempChat]);
+
+  const generateDraftForSession = useCallback(
+    async (sessionId: string, applicationType: string, extraFacts: string) => {
+      if (!user) {
+        setLoginOpen(true);
+        return;
+      }
+
+      const session = sessions.find((item) => item.id === sessionId) ?? null;
+      const caseFacts = [extraFacts.trim(), buildSessionDraftFacts(session)]
+        .filter((item) => item.length > 0)
+        .join("\n\n")
+        .trim();
+
+      if (!caseFacts) {
+        addMessage(
+          "assistant",
+          "I don’t have enough context yet. Please share key case facts in chat so I can prepare the draft.",
+          sessionId
+        );
+        setDraftFlow({ step: "awaitingFacts", sessionId, applicationType });
+        return;
+      }
+
+      setIsGeneratingDraft(true);
+      setIsTyping(true);
+
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch(`${API_BASE_URL}/api/drafts/generate`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+            "X-User-Email": user.email ?? "",
+          },
+          body: JSON.stringify({
+            application_type: applicationType,
+            case_facts: caseFacts,
+            session_id: sessionId,
+            auto_email_to_user: false,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Draft generation failed with status ${response.status}`);
+        }
+
+        const data = (await response.json()) as DraftGenerateApiResponse;
+        const assistantContent = [`### ${data.title}`, data.draft_content, "", `> ${data.disclaimer}`].join("\n");
+
+        addMessage("assistant", assistantContent, sessionId);
+        await fetchSessionDrafts(sessionId);
+        setDraftFlow({ step: "idle" });
+        toast.success("Draft created");
+      } catch (error) {
+        console.error(error);
+        addMessage(
+          "assistant",
+          "I couldn't generate the legal draft right now. Please retry with clearer facts.",
+          sessionId
+        );
+        toast.error("Draft generation failed");
+      } finally {
+        setIsTyping(false);
+        setIsGeneratingDraft(false);
+      }
+    },
+    [addMessage, buildSessionDraftFacts, fetchSessionDrafts, sessions, user]
+  );
+
   const handleGenerateDraft = async () => {
     if (!user) {
       setLoginOpen(true);
       return;
     }
-
-    const requestedType =
-      window.prompt(
-        "Draft type? (bail_application, legal_notice, police_complaint, consumer_complaint, custom)",
-        "bail_application"
-      ) ?? "bail_application";
-    const normalizedType = requestedType.trim().toLowerCase().replace(/\s+/g, "_");
-    const supportedTypes = new Set([
-      "bail_application",
-      "legal_notice",
-      "police_complaint",
-      "consumer_complaint",
-      "custom",
-    ]);
-    const applicationType = supportedTypes.has(normalizedType) ? normalizedType : "custom";
-
-    const extraFacts =
-      window.prompt(
-        "Add any key facts for this draft (optional). Leave blank to use recent chat context only.",
-        ""
-      ) ?? "";
-
-    let sid = activeId;
-    if (!sid) {
-      const newSession: ChatSession = {
-        id: createLocalSessionId(),
-        title: "New Chat",
-        messages: [],
-        pinned: false,
-      };
-
-      if (tempChat) {
-        setSessions((prev) => [{ ...newSession, title: "⌛ " + newSession.title }, ...prev]);
-      } else {
-        setSessions((prev) => [newSession, ...prev]);
-      }
-
-      sid = newSession.id;
-      setActiveId(sid);
-    }
-
-    const session = sessions.find((item) => item.id === sid) ?? null;
-    const caseFacts = [extraFacts.trim(), buildSessionDraftFacts(session)]
-      .filter((item) => item.length > 0)
-      .join("\n\n")
-      .trim();
-
-    if (!caseFacts) {
-      toast.error("Please provide case facts or add some chat context first");
+    if (tempChat) {
+      toast.error("Draft documents are disabled in Temporary Chat mode");
       return;
     }
 
-    setIsGeneratingDraft(true);
-    setIsTyping(true);
-
-    try {
-      const token = await user.getIdToken();
-      const response = await fetch(`${API_BASE_URL}/api/drafts/generate`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-          "X-User-Email": user.email ?? "",
-        },
-        body: JSON.stringify({
-          application_type: applicationType,
-          case_facts: caseFacts,
-          session_id: sid,
-          auto_email_to_user: true,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Draft generation failed with status ${response.status}`);
-      }
-
-      const data = (await response.json()) as DraftGenerateApiResponse;
-      const assistantContent = [
-        `### ${data.title}`,
-        data.draft_content,
-        "",
-        `> ${data.disclaimer}`,
-        "",
-        data.email_message,
-      ].join("\n");
-
-      addMessage("assistant", assistantContent, sid);
-      toast.success(data.email_sent ? "Draft created and mailed" : "Draft created");
-    } catch (error) {
-      console.error(error);
-      addMessage(
-        "assistant",
-        "I couldn't generate the legal draft right now. Please retry with clearer facts.",
-        sid
-      );
-      toast.error("Draft generation failed");
-    } finally {
-      setIsTyping(false);
-      setIsGeneratingDraft(false);
-    }
+    const sid = ensureActiveSession();
+    setDraftFlow({ step: "awaitingType", sessionId: sid });
+    addMessage(
+      "assistant",
+      [
+        "Select the draft type by replying with one option:",
+        "- bail_application",
+        "- legal_notice",
+        "- police_complaint",
+        "- consumer_complaint",
+        "- custom",
+      ].join("\n"),
+      sid
+    );
   };
 
   const handleUploadFiles = async (files: File[]) => {
@@ -690,6 +799,88 @@ function ChatApp() {
     setActiveId(id);
     if (!tempChat) {
       await fetchSessionMessages(id);
+      await fetchSessionDrafts(id);
+    }
+  };
+
+  const handleDownloadDraft = async (draftId: string, format: "pdf" | "docx") => {
+    if (!user) {
+      setLoginOpen(true);
+      return;
+    }
+
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch(
+        `${API_BASE_URL}/api/drafts/${encodeURIComponent(draftId)}/export?format=${format}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const errorBody = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(errorBody?.detail || `Draft export failed (${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const match = disposition.match(/filename=([^;]+)/i);
+      const fallbackName = `draft.${format}`;
+      const fileName = (match?.[1] || fallbackName).trim().replace(/^"|"$/g, "");
+
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      toast.success(`Draft downloaded as ${format.toUpperCase()}`);
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Could not download draft");
+    }
+  };
+
+  const handleOpenDraftMailComposer = async (draftId: string) => {
+    if (!user) {
+      setLoginOpen(true);
+      return;
+    }
+
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch(`${API_BASE_URL}/api/drafts/${encodeURIComponent(draftId)}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Could not load draft (${response.status})`);
+      }
+
+      const draft = (await response.json()) as DraftRecordApiResponse;
+      const subject = toPrintableText(`Vidhoor Draft: ${draft.title}`);
+      const body = `${toPrintableText(draft.draft_content)}\n\n--\nThis draft was prepared in Vidhoor and should be reviewed before sending.`;
+      const gmailUrl =
+        `https://mail.google.com/mail/?view=cm&fs=1&tf=1` +
+        `&su=${encodeURIComponent(subject)}` +
+        `&body=${encodeURIComponent(body)}`;
+
+      window.open(gmailUrl, "_blank", "noopener,noreferrer");
+      toast.success("Gmail compose opened. Fill To/CC/BCC and send.");
+    } catch (error) {
+      console.error(error);
+      const fallback = "mailto:";
+      window.open(fallback, "_self");
+      toast.error("Could not prefill draft; opened default mail app.");
     }
   };
 
@@ -903,7 +1094,7 @@ function ChatApp() {
 
   return (
     <SidebarProvider>
-      <div className="flex min-h-screen w-full bg-background">
+      <div className="flex h-screen w-full overflow-hidden bg-background">
         <VidhoorSidebar
           sessions={sidebarSessions}
           activeSessionId={activeId}
@@ -925,7 +1116,7 @@ function ChatApp() {
           tempChat={tempChat}
         />
 
-        <div className="flex flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">
           {/* Header */}
           <header className="flex flex-col border-b border-border/40">
             <div className="relative flex h-14 items-center px-3">
@@ -1093,6 +1284,84 @@ function ChatApp() {
                 Temporary Chat: This conversation will not be saved.
               </div>
             )}
+
+              {!tempChat && user && activeId && (
+                <div className="border-t border-border/40 bg-muted/20 px-3 py-2">
+                  <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
+                    <p className="text-xs font-medium text-muted-foreground">Documentation</p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => {
+                        void handleGenerateDraft();
+                      }}
+                      disabled={isGeneratingDraft}
+                    >
+                      <FileText className="mr-1.5 h-3.5 w-3.5" />
+                      {isGeneratingDraft ? "Drafting..." : "Create Draft"}
+                    </Button>
+                  </div>
+                  <div className="mx-auto mt-2 w-full max-w-3xl">
+                    {isLoadingDraftHistory ? (
+                      <p className="text-xs text-muted-foreground">Loading draft history...</p>
+                    ) : draftHistory.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No drafts yet for this chat.</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {draftHistory.slice(0, 5).map((draft) => (
+                          <div
+                            key={draft.draft_id}
+                            className="flex items-center justify-between rounded-lg border border-border/50 bg-background/80 px-2.5 py-2"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-medium text-foreground">{draft.title}</p>
+                              <p className="text-[11px] text-muted-foreground">
+                                {new Date(draft.created_at).toLocaleString()} • {draft.application_type}
+                              </p>
+                            </div>
+                            <div className="ml-3 flex items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={() => {
+                                  void handleDownloadDraft(draft.draft_id, "pdf");
+                                }}
+                              >
+                                <Download className="mr-1 h-3.5 w-3.5" />
+                                PDF
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={() => {
+                                  void handleDownloadDraft(draft.draft_id, "docx");
+                                }}
+                              >
+                                <Download className="mr-1 h-3.5 w-3.5" />
+                                DOCX
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={() => {
+                                  void handleOpenDraftMailComposer(draft.draft_id);
+                                }}
+                              >
+                                <Mail className="mr-1 h-3.5 w-3.5" />
+                                Mail
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
           </header>
 
           {/* Chat area */}
@@ -1104,20 +1373,26 @@ function ChatApp() {
           />
 
           {/* Input */}
-          <ChatInput
-            onSend={handleSend}
-            onUploadFiles={handleUploadFiles}
-            disabled={inputDisabled}
-            isUploading={isUploadingDocument}
-            guestRemaining={guestRemaining}
-            activeDocuments={activeDocuments}
-            onRemoveActiveDocument={(documentId) =>
-              setActiveDocuments((prev) =>
-                prev.filter((document) => document.id !== documentId)
-              )
-            }
-            onOpenActiveDocument={handleOpenActiveDocument}
-          />
+          <div className="sticky bottom-0 z-10 border-t border-border/40 bg-background/95 backdrop-blur">
+            <ChatInput
+              onSend={handleSend}
+              onUploadFiles={handleUploadFiles}
+              onCreateDraft={() => {
+                void handleGenerateDraft();
+              }}
+              disabled={inputDisabled}
+              isUploading={isUploadingDocument}
+              isGeneratingDraft={isGeneratingDraft}
+              guestRemaining={guestRemaining}
+              activeDocuments={activeDocuments}
+              onRemoveActiveDocument={(documentId) =>
+                setActiveDocuments((prev) =>
+                  prev.filter((document) => document.id !== documentId)
+                )
+              }
+              onOpenActiveDocument={handleOpenActiveDocument}
+            />
+          </div>
         </div>
       </div>
 

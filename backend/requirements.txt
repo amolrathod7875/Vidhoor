@@ -18,3 +18,5 @@ sentencepiece
 torch
 langdetect
 python-multipart
+reportlab
+python-docx

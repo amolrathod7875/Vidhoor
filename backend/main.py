@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Header, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Header, Depends, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, Optional
 import logging
 import os
@@ -17,6 +18,7 @@ from database import OracleChatHistoryRepository
 from llm_engine import LLMEngine
 from pii_vault import PIIVault
 from services.draft_mailer import send_legal_draft_email
+from services.draft_exporter import render_draft_docx_bytes, render_draft_pdf_bytes
 from services.ocr_vision import VisionOCRService
 from services.translate_helsinki import translate_pages_to_english
 
@@ -167,6 +169,22 @@ class DraftEmailResponse(BaseModel):
     sent: bool
     recipient_email: str
     message: str
+
+
+class DraftRecord(BaseModel):
+    draft_id: str
+    user_id: str
+    email_id: str
+    session_id: str
+    application_type: str
+    title: str
+    draft_content: str
+    draft_meta: dict[str, Any] = Field(default_factory=dict)
+    delivery_status: str
+    last_delivery_error: str
+    emailed_at: str
+    created_at: str
+    updated_at: str
 
 
 _chroma_manager: Optional[ChromaManager] = None
@@ -338,6 +356,13 @@ def _build_draft_email_subject(application_type: str, draft_title: str) -> str:
     label = APPLICATION_TYPE_LABELS.get(application_type, "Legal Draft")
     title = " ".join((draft_title or "").split())[:80]
     return f"Vidhoor Draft: {label} - {title or 'Review Required'}"
+
+
+def _slugify_filename(value: str, fallback: str = "draft") -> str:
+    """Generate filesystem-safe filename stem."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return text[:80] or fallback
 
 
 def _extract_recent_session_context(user_id: str, session_id: str | None, limit: int = 8) -> str:
@@ -1043,6 +1068,19 @@ async def generate_legal_draft(
         },
     )
 
+    if request.session_id:
+        try:
+            chat_repo.save_chat_turn(
+                user_id=user_id,
+                session_id=request.session_id,
+                user_message=f"Generate legal draft: {APPLICATION_TYPE_LABELS.get(application_type, 'Legal Draft')}",
+                assistant_message=f"### {title}\n\n{draft_content}\n\n> {DRAFT_DISCLAIMER}",
+                masked_entities={},
+                session_title=None,
+            )
+        except Exception as exc:
+            logger.exception("Failed to append generated draft into chat history: %s", exc)
+
     email_target = email_id
     email_sent = False
     email_message = "Draft generated successfully."
@@ -1123,6 +1161,88 @@ async def email_saved_draft(
         sent=sent,
         recipient_email=recipient_email,
         message=message,
+    )
+
+
+@app.get("/api/drafts", response_model=list[DraftRecord])
+async def list_saved_drafts(
+    session_id: str | None = Query(default=None),
+    user: dict = Depends(verify_token),
+):
+    """List generated drafts for authenticated user, optionally by chat session."""
+    user_id = get_required_user_id(user)
+
+    try:
+        rows = get_chat_repo().list_user_drafts(user_id=user_id, session_id=session_id)
+        return [DraftRecord(**item) for item in rows]
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch draft history: {exc}")
+
+
+@app.get("/api/drafts/{draft_id}", response_model=DraftRecord)
+async def get_saved_draft(
+    draft_id: str,
+    user: dict = Depends(verify_token),
+):
+    """Get one generated draft owned by authenticated user."""
+    user_id = get_required_user_id(user)
+
+    try:
+        draft = get_chat_repo().get_user_draft(user_id=user_id, draft_id=draft_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        return DraftRecord(**draft)
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch draft: {exc}")
+
+
+@app.get("/api/drafts/{draft_id}/export")
+async def export_saved_draft(
+    draft_id: str,
+    format: str = Query(default="pdf"),
+    user: dict = Depends(verify_token),
+):
+    """Export saved draft as PDF or DOCX for download."""
+    user_id = get_required_user_id(user)
+    normalized = str(format or "pdf").strip().lower()
+    if normalized not in {"pdf", "docx"}:
+        raise HTTPException(status_code=400, detail="format must be 'pdf' or 'docx'")
+
+    draft = get_chat_repo().get_user_draft(user_id=user_id, draft_id=draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    title = str(draft.get("title") or "Legal Draft")
+    content = str(draft.get("draft_content") or "")
+
+    try:
+        if normalized == "pdf":
+            payload = render_draft_pdf_bytes(title=title, draft_content=content, disclaimer=DRAFT_DISCLAIMER)
+            media_type = "application/pdf"
+            extension = "pdf"
+        else:
+            payload = render_draft_docx_bytes(title=title, draft_content=content, disclaimer=DRAFT_DISCLAIMER)
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            extension = "docx"
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Draft export failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Draft export failed")
+
+    filename = f"{_slugify_filename(title)}.{extension}"
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 

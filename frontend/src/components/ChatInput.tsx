@@ -14,8 +14,10 @@ import { useAuth } from "@/hooks/useAuth";
 interface Props {
   onSend: (text: string) => void;
   onUploadFiles: (files: File[]) => void;
+  onCreateDraft?: () => void;
   disabled: boolean;
   isUploading?: boolean;
+  isGeneratingDraft?: boolean;
   guestRemaining: number;
   activeDocuments?: Array<{
     id: string;
@@ -31,8 +33,10 @@ const MAX_ACTIVE_DOCUMENTS = 5;
 export function ChatInput({
   onSend,
   onUploadFiles,
+  onCreateDraft,
   disabled,
   isUploading = false,
+  isGeneratingDraft = false,
   guestRemaining,
   activeDocuments = [],
   onRemoveActiveDocument,
@@ -169,7 +173,7 @@ export function ChatInput({
               size="icon"
               type="button"
               variant="ghost"
-              disabled={isBlocked || isUploading}
+              disabled={isBlocked || isUploading || isGeneratingDraft}
               className="m-1.5 h-8 w-8 shrink-0 rounded-xl text-muted-foreground"
               title="Upload file"
             >
@@ -177,11 +181,21 @@ export function ChatInput({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="top" className="w-36">
-            <DropdownMenuItem onSelect={() => openFilePicker("image")}>
+            <DropdownMenuItem onSelect={() => openFilePicker("image")} className="gap-2">
+              <ImageIcon className="h-3.5 w-3.5" />
               Upload image
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => openFilePicker("document")}>
+            <DropdownMenuItem onSelect={() => openFilePicker("document")} className="gap-2">
+              <FileText className="h-3.5 w-3.5" />
               Upload document
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => onCreateDraft?.()}
+              disabled={!onCreateDraft || isGeneratingDraft}
+              className="gap-2"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              {isGeneratingDraft ? "Drafting..." : "Draft document"}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

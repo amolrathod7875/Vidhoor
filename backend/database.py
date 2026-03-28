@@ -662,6 +662,67 @@ class OracleChatHistoryRepository:
 			"updated_at": _iso(updated_at),
 		}
 
+	def list_user_drafts(
+		self,
+		user_id: str,
+		limit: int = 100,
+		session_id: str | None = None,
+	) -> list[dict[str, Any]]:
+		"""Return draft history for a user, optionally scoped to a session."""
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					"""
+					SELECT draft_id, user_id, email_id, session_id, application_type,
+					       title, draft_content, draft_meta_json, delivery_status,
+					       last_delivery_error, emailed_at, created_at, updated_at
+					FROM vidhoor_user_drafts
+					WHERE user_id = :user_id
+					  AND (:session_id IS NULL OR session_id = :session_id)
+					ORDER BY created_at DESC
+					FETCH FIRST :limit ROWS ONLY
+					""",
+					{"user_id": user_id, "session_id": session_id, "limit": limit},
+				)
+				rows = cursor.fetchall()
+
+		result: list[dict[str, Any]] = []
+		for (
+			draft_id,
+			row_user_id,
+			email_id,
+			session_id_value,
+			application_type,
+			title,
+			draft_content,
+			draft_meta_json,
+			delivery_status,
+			last_delivery_error,
+			emailed_at,
+			created_at,
+			updated_at,
+		) in rows:
+			content = draft_content.read() if hasattr(draft_content, "read") else str(draft_content or "")
+			result.append(
+				{
+					"draft_id": str(draft_id),
+					"user_id": str(row_user_id),
+					"email_id": str(email_id or ""),
+					"session_id": str(session_id_value or ""),
+					"application_type": str(application_type or ""),
+					"title": str(title or ""),
+					"draft_content": content,
+					"draft_meta": _decode_json(draft_meta_json),
+					"delivery_status": str(delivery_status or "generated"),
+					"last_delivery_error": str(last_delivery_error or ""),
+					"emailed_at": _iso(emailed_at),
+					"created_at": _iso(created_at),
+					"updated_at": _iso(updated_at),
+				}
+			)
+
+		return result
+
 	def mark_draft_delivery(
 		self,
 		user_id: str,
