@@ -1,5 +1,5 @@
 cd backend
 docker compose -f docker-compose.chroma.yml up -d
-python ingest_legal_resources.py --input-dir data/Case --resource-category case --status active
+python ingest_legal_resources.py --input-dir data/Case --resource-category case --status active --ocr-fallback
 
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload

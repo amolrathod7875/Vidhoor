@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import os
 import re
+import tempfile
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -163,9 +165,13 @@ def read_pdf_pages_with_ocr_fallback(
         ocr_service = VisionOCRService()
         ocr_pages = ocr_service.extract_pages(str(file_path))
     except Exception as exc:
-        raise RuntimeError(
-            f"OCR fallback failed for '{file_path.name}': {exc}"
-        ) from exc
+        error_text = str(exc).lower()
+        if "exceeds the maximum permissible file size" in error_text:
+            ocr_pages = _read_pdf_pages_via_pagewise_ocr(file_path=file_path, ocr_service=ocr_service)
+        else:
+            raise RuntimeError(
+                f"OCR fallback failed for '{file_path.name}': {exc}"
+            ) from exc
 
     extracted_pages: list[tuple[int, str]] = []
     for item in ocr_pages:
@@ -181,6 +187,53 @@ def read_pdf_pages_with_ocr_fallback(
         )
 
     return extracted_pages, True
+
+
+def _read_pdf_pages_via_pagewise_ocr(
+    file_path: Path,
+    ocr_service: Any,
+) -> list[dict[str, Any]]:
+    """OCR a PDF one page at a time to bypass provider size limits."""
+    try:
+        pypdf_module = import_module("pypdf")
+        PdfReader = getattr(pypdf_module, "PdfReader")
+        PdfWriter = getattr(pypdf_module, "PdfWriter")
+    except Exception as exc:
+        raise RuntimeError("pypdf is required for page-wise OCR fallback") from exc
+
+    reader = PdfReader(str(file_path))
+    aggregated_pages: list[dict[str, Any]] = []
+
+    for page_index, page in enumerate(reader.pages, start=1):
+        writer = PdfWriter()
+        writer.add_page(page)
+
+        temp_fd, temp_path_raw = tempfile.mkstemp(suffix=f"_page_{page_index}.pdf")
+        os.close(temp_fd)
+        try:
+            with Path(temp_path_raw).open("wb") as temp_pdf:
+                writer.write(temp_pdf)
+            page_results = ocr_service.extract_pages(str(temp_path_raw))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Page-wise OCR failed at page {page_index} for '{file_path.name}': {exc}"
+            ) from exc
+        finally:
+            try:
+                Path(temp_path_raw).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        page_text = "\n".join(
+            str(item.get("text") or "").strip()
+            for item in page_results
+            if str(item.get("text") or "").strip()
+        ).strip()
+
+        if page_text:
+            aggregated_pages.append({"page": page_index, "text": page_text})
+
+    return aggregated_pages
 
 
 def read_text_file(file_path: Path) -> str:

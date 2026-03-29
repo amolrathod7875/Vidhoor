@@ -21,6 +21,7 @@ from services.draft_mailer import send_legal_draft_email
 from services.draft_exporter import render_draft_docx_bytes, render_draft_pdf_bytes
 from services.ocr_vision import VisionOCRService
 from services.translate_helsinki import translate_pages_to_english
+from services.indian_kanoon_live import fetch_indian_kanoon_case_links
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,32 @@ LEGAL_QUERY_KEYWORDS = {
     "punishment",
     "section",
     "supreme court",
+}
+
+CASE_QUERY_KEYWORDS = {
+    "case",
+    "cases",
+    "judgment",
+    "judgement",
+    "order",
+    "orders",
+    "precedent",
+    "precedents",
+}
+
+RECENT_CASE_HINTS = {
+    "recent",
+    "latest",
+    "new",
+    "current",
+    "this year",
+    "last year",
+    "today",
+    "now",
+    "recent cases",
+    "latest cases",
+    "recent judgments",
+    "recent judgements",
 }
 
 BAIL_QUERY_KEYWORDS = {
@@ -524,6 +551,68 @@ def is_legal_query(query: str) -> bool:
     return False
 
 
+def _extract_years_from_query(query: str) -> list[int]:
+    """Extract 4-digit years from query text."""
+    found = re.findall(r"\b(20\d{2})\b", str(query or ""))
+    years: list[int] = []
+    for item in found:
+        try:
+            years.append(int(item))
+        except ValueError:
+            continue
+    return years
+
+
+def _is_recent_case_query(query: str) -> bool:
+    """Detect if query explicitly asks for recent/current/year-specific cases."""
+    normalized = str(query or "").lower().strip()
+    if not normalized:
+        return False
+
+    if any(hint in normalized for hint in RECENT_CASE_HINTS):
+        return True
+
+    current_year = datetime.now().year
+    if any(year in {current_year, current_year - 1} for year in _extract_years_from_query(normalized)):
+        return True
+
+    return False
+
+
+def _is_case_request_query(query: str) -> bool:
+    """Detect case/judgment lookup intent in legal context."""
+    normalized = str(query or "").lower().strip()
+    if not normalized:
+        return False
+
+    has_case_intent = any(keyword in normalized for keyword in CASE_QUERY_KEYWORDS)
+    if not has_case_intent:
+        return False
+
+    has_legal_context = is_legal_query(normalized) or any(
+        keyword in normalized
+        for keyword in ("rape", "murder", "assault", "harassment", "dowry", "pocso", "crime", "offence")
+    )
+    return has_legal_context
+
+
+def _should_fetch_indian_kanoon_links(query: str) -> bool:
+    """Determine whether Indian Kanoon live links should be fetched for a query.
+
+    Trigger modes via env INDIAN_KANOON_TRIGGER_MODE:
+    - recent_only: only recent/current/year case queries
+    - case_queries: any legal case/judgment request
+    - always_legal: any legal query
+    """
+    mode = os.environ.get("INDIAN_KANOON_TRIGGER_MODE", "case_queries").strip().lower()
+
+    if mode == "recent_only":
+        return _is_recent_case_query(query)
+    if mode == "always_legal":
+        return is_legal_query(query)
+    return _is_case_request_query(query) or _is_recent_case_query(query)
+
+
 def _normalize_reference(value: str | None) -> str:
     """Normalize legal reference tokens (section/article) for tolerant matching."""
     if not value:
@@ -740,6 +829,43 @@ def _format_citation_context(citation: Citation) -> str:
 
     header = " | ".join(metadata_parts)
     return f"[{header}]\n{citation.snippet}"
+
+
+def _sanitize_markdown_link_label(text: str) -> str:
+    """Sanitize user-visible markdown link labels."""
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    cleaned = cleaned.replace("[", "(").replace("]", ")")
+    return cleaned
+
+
+def _build_related_case_links_markdown(case_links: list[dict[str, str]]) -> str:
+    """Build markdown section for live Indian Kanoon links."""
+    if not case_links:
+        return ""
+
+    lines = ["### Related recent case links (Indian Kanoon)"]
+    for link in case_links:
+        title = _sanitize_markdown_link_label(link.get("title") or "Indian Kanoon Case")
+        url = str(link.get("url") or "").strip()
+        if not url:
+            continue
+
+        tail_parts: list[str] = []
+        if str(link.get("court") or "").strip():
+            tail_parts.append(str(link.get("court") or "").strip())
+        if str(link.get("date") or "").strip():
+            tail_parts.append(str(link.get("date") or "").strip())
+
+        if tail_parts:
+            lines.append(f"- [{title}]({url}) — {' | '.join(tail_parts)}")
+        else:
+            lines.append(f"- [{title}]({url})")
+
+    if len(lines) <= 1:
+        return ""
+
+    lines.append("- Links are for quick reference; verify facts on the source page.")
+    return "\n".join(lines)
 
 
 def _retrieve_legal_citations(masked_query: str) -> tuple[list[Citation], Optional[float]]:
@@ -1021,6 +1147,22 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                 )
         
         final_readable_response = pii_vault.unmask_text(ai_response_masked, pii_map)
+
+        should_try_indian_kanoon = _should_fetch_indian_kanoon_links(request.message)
+        if should_try_indian_kanoon:
+            try:
+                include_related_links = os.environ.get("ENABLE_INDIAN_KANOON_LINKS", "true").strip().lower() not in {"0", "false", "no"}
+                if include_related_links:
+                    max_links = int(os.environ.get("INDIAN_KANOON_MAX_LINKS", "3") or "3")
+                    case_links = fetch_indian_kanoon_case_links(
+                        query=request.message,
+                        max_links=max_links,
+                    )
+                    links_section = _build_related_case_links_markdown(case_links)
+                    if links_section:
+                        final_readable_response = f"{final_readable_response}\n\n{links_section}"
+            except Exception as exc:
+                logger.warning("Failed to fetch Indian Kanoon related links: %s", exc)
         
         # Step 5: Save to Oracle DB (if NOT temporary and authenticated)
         if not request.is_temporary_chat and user and user.get("uid"):

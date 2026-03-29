@@ -148,6 +148,15 @@ export function ChatArea({
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
+                      a: ({ node, href, ...props }) => (
+                        <a
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline underline-offset-2 hover:text-primary/90"
+                          {...props}
+                        />
+                      ),
                       h2: ({ node, ...props }) => (
                         <h2 className="mt-4 text-lg font-bold leading-snug" {...props} />
                       ),

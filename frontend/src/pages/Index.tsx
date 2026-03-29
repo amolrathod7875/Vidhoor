@@ -22,6 +22,7 @@ import {
   PinOff,
   LogIn,
   LogOut,
+  X,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
@@ -182,6 +183,7 @@ function ChatApp() {
   const [activeDocuments, setActiveDocuments] = useState<ActiveDocumentContext[]>([]);
   const [draftHistory, setDraftHistory] = useState<DraftRecordApiResponse[]>([]);
   const [draftFlow, setDraftFlow] = useState<DraftFlowState>({ step: "idle" });
+  const [showDraftTile, setShowDraftTile] = useState(true);
   const [tempChat, setTempChat] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const prevTempChat = useRef(tempChat);
@@ -205,6 +207,10 @@ function ChatApp() {
       prevTempChat.current = tempChat;
     }
   }, [tempChat]);
+
+  useEffect(() => {
+    setShowDraftTile(true);
+  }, [activeId, tempChat, user?.uid]);
 
   useEffect(() => {
     const loadHistorySessions = async () => {
@@ -1285,22 +1291,34 @@ function ChatApp() {
               </div>
             )}
 
-              {!tempChat && user && activeId && (
+              {!tempChat && user && activeId && showDraftTile && (
                 <div className="border-t border-border/40 bg-muted/20 px-3 py-2">
                   <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
                     <p className="text-xs font-medium text-muted-foreground">Documentation</p>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      onClick={() => {
-                        void handleGenerateDraft();
-                      }}
-                      disabled={isGeneratingDraft}
-                    >
-                      <FileText className="mr-1.5 h-3.5 w-3.5" />
-                      {isGeneratingDraft ? "Drafting..." : "Create Draft"}
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => {
+                          void handleGenerateDraft();
+                        }}
+                        disabled={isGeneratingDraft}
+                      >
+                        <FileText className="mr-1.5 h-3.5 w-3.5" />
+                        {isGeneratingDraft ? "Drafting..." : "Create Draft"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground"
+                        onClick={() => setShowDraftTile(false)}
+                        title="Close draft section"
+                        aria-label="Close draft section"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="mx-auto mt-2 w-full max-w-3xl">
                     {isLoadingDraftHistory ? (

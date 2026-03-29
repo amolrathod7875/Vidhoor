@@ -13,6 +13,7 @@ python-dotenv
 pypdf
 rank-bm25
 requests
+beautifulsoup4
 transformers
 sentencepiece
 torch
