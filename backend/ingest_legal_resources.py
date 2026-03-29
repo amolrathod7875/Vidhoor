@@ -12,6 +12,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import re
 from importlib import import_module
 from pathlib import Path
@@ -21,6 +22,105 @@ from urllib.parse import quote
 from chroma_manager import ChromaManager
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
+
+CASE_DOC_TYPE = "case_law"
+STATUTE_DOC_TYPE = "statute"
+
+
+def infer_resource_category(file_path: Path, explicit_category: str | None = None) -> str:
+    """Infer whether a resource is statute text or case law."""
+    if explicit_category and explicit_category != "auto":
+        return explicit_category
+
+    lowered_parts = [part.lower() for part in file_path.parts]
+    if any(part in {"case", "cases", "judgments", "judgements"} for part in lowered_parts):
+        return "case"
+
+    lowered_name = file_path.stem.lower()
+    if any(keyword in lowered_name for keyword in ("v", "vs", "judgment", "judgement", "appeal")):
+        return "case"
+
+    return "statute"
+
+
+def _extract_case_citation(text: str) -> str:
+    """Extract common Indian case citation tokens from text."""
+    if not text:
+        return ""
+
+    patterns = [
+        r"\b\(?\d{4}\)?\s*\d+\s*SCC\s*\d+\b",
+        r"\bAIR\s*\d{4}\s*[A-Z]{2,}\s*\d+\b",
+        r"\b\d{4}\s*CriLJ\s*\d+\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(0).strip()
+    return ""
+
+
+def _extract_case_year(text: str) -> int | None:
+    """Extract likely year from case text."""
+    if not text:
+        return None
+
+    current_year = datetime.now().year
+    for raw in re.findall(r"\b(19\d{2}|20\d{2})\b", text):
+        year = int(raw)
+        if 1900 <= year <= current_year:
+            return year
+    return None
+
+
+def _detect_court(text: str) -> str:
+    """Detect court from case text."""
+    normalized = (text or "").lower()
+    if "supreme court" in normalized:
+        return "Supreme Court of India"
+    if "high court" in normalized:
+        return "High Court"
+    if "district court" in normalized:
+        return "District Court"
+    if "sessions court" in normalized or "session court" in normalized:
+        return "Sessions Court"
+    return ""
+
+
+def extract_case_metadata(file_path: Path, full_text: str) -> dict[str, Any]:
+    """Build case-law specific metadata fields from filename and body text."""
+    text_head = (full_text or "")[:12000]
+    citation_value = _extract_case_citation(text_head)
+    year_value = _extract_case_year(citation_value or text_head)
+    court_value = _detect_court(text_head)
+
+    normalized_name = file_path.stem.replace("_", " ").replace("-", " ").strip()
+    case_name = re.sub(r"\s+", " ", normalized_name).title()
+    topic_value = case_name
+
+    jurisdiction_value = "India"
+    if "High Court" in court_value:
+        jurisdiction_value = "State"
+
+    bench_value = ""
+    bench_match = re.search(
+        r"\b([A-Z][a-z]+\s+Bench|Constitution\s+Bench|Division\s+Bench|Single\s+Judge\s+Bench)\b",
+        text_head,
+        flags=re.IGNORECASE,
+    )
+    if bench_match:
+        bench_value = bench_match.group(1).strip()
+
+    return {
+        "doc_type": CASE_DOC_TYPE,
+        "case_name": case_name,
+        "citation_text": citation_value,
+        "year": year_value,
+        "court": court_value,
+        "jurisdiction": jurisdiction_value,
+        "bench": bench_value,
+        "topic": topic_value,
+    }
 
 
 def read_pdf_pages(file_path: Path) -> list[tuple[int, str]]:
@@ -41,6 +141,46 @@ def read_pdf_pages(file_path: Path) -> list[tuple[int, str]]:
             page_texts.append((page_index, extracted))
 
     return page_texts
+
+
+def read_pdf_pages_with_ocr_fallback(
+    file_path: Path,
+    use_ocr_fallback: bool,
+) -> tuple[list[tuple[int, str]], bool]:
+    """Extract PDF text with optional OCR fallback for scanned/image-only files."""
+    pages = read_pdf_pages(file_path)
+    if pages or not use_ocr_fallback:
+        return pages, False
+
+    try:
+        VisionOCRService = getattr(import_module("services.ocr_vision"), "VisionOCRService")
+    except Exception as exc:
+        raise RuntimeError(
+            "OCR fallback requested but OCR service is unavailable."
+        ) from exc
+
+    try:
+        ocr_service = VisionOCRService()
+        ocr_pages = ocr_service.extract_pages(str(file_path))
+    except Exception as exc:
+        raise RuntimeError(
+            f"OCR fallback failed for '{file_path.name}': {exc}"
+        ) from exc
+
+    extracted_pages: list[tuple[int, str]] = []
+    for item in ocr_pages:
+        page_number = int(item.get("page") or 0)
+        page_text = str(item.get("text") or "").strip()
+        if page_number <= 0 or not page_text:
+            continue
+        extracted_pages.append((page_number, page_text))
+
+    if not extracted_pages:
+        raise RuntimeError(
+            f"OCR fallback returned no text for '{file_path.name}'."
+        )
+
+    return extracted_pages, True
 
 
 def read_text_file(file_path: Path) -> str:
@@ -113,6 +253,9 @@ def infer_act_name(file_path: Path, explicit_act: str | None) -> str:
     if explicit_act:
         return explicit_act
 
+    if infer_resource_category(file_path=file_path) == "case":
+        return "Indian Case Law"
+
     name = file_path.stem.lower()
     if "constitution" in name:
         return "Constitution of India"
@@ -174,6 +317,8 @@ def build_metadata(
     status: str,
     page_numbers: list[int] | None = None,
     source_url: str = "",
+    resource_category: str = "statute",
+    case_metadata: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build metadata aligned with chunks for Chroma ingestion."""
     all_metadata: list[dict[str, Any]] = []
@@ -186,11 +331,15 @@ def build_metadata(
             "status": status,
             "source": file_path.name,
             "resource_type": file_path.suffix.lower().lstrip("."),
+            "doc_type": CASE_DOC_TYPE if resource_category == "case" else STATUTE_DOC_TYPE,
         }
         if source_url:
             item["source_url"] = source_url
         if page_numbers and index < len(page_numbers):
             item["page"] = int(page_numbers[index])
+
+        if resource_category == "case" and case_metadata:
+            item.update(case_metadata)
 
         reference = detect_reference(
             chunk,
@@ -221,7 +370,7 @@ def collect_input_files(inputs: list[str], input_dir: str | None) -> list[Path]:
         if not directory.exists() or not directory.is_dir():
             raise NotADirectoryError(f"Invalid input directory: {directory}")
         for extension in SUPPORTED_EXTENSIONS:
-            files.extend(directory.glob(f"*{extension}"))
+            files.extend(directory.rglob(f"*{extension}"))
 
     unique_files: list[Path] = []
     seen: set[str] = set()
@@ -246,6 +395,8 @@ def ingest_file(
     overlap: int,
     act_name: str | None,
     source_base_url: str | None,
+    resource_category: str,
+    use_ocr_fallback: bool,
 ) -> int:
     """Ingest a single file and return chunk count."""
     source_url = build_source_url(file_path=file_path, source_base_url=source_base_url)
@@ -254,9 +405,14 @@ def ingest_file(
     extension = file_path.suffix.lower()
     chunks: list[str] = []
     page_numbers: list[int] = []
+    raw_full_text = ""
 
     if extension == ".pdf":
-        pages = read_pdf_pages(file_path)
+        pages, used_ocr = read_pdf_pages_with_ocr_fallback(
+            file_path=file_path,
+            use_ocr_fallback=use_ocr_fallback,
+        )
+        raw_full_text = "\n".join(page_text for _, page_text in pages)
         for page_number, page_text in pages:
             page_chunks = split_into_chunks(
                 text=page_text,
@@ -265,12 +421,22 @@ def ingest_file(
             )
             chunks.extend(page_chunks)
             page_numbers.extend([page_number] * len(page_chunks))
+
+        if used_ocr:
+            print(f"[OCR fallback] {file_path}")
     else:
         raw_text = read_resource(file_path)
+        raw_full_text = raw_text
         chunks = split_into_chunks(text=raw_text, chunk_size=chunk_size, overlap=overlap)
 
     if not chunks:
         raise ValueError(f"No chunks generated for file: {file_path}")
+
+    case_metadata = (
+        extract_case_metadata(file_path=file_path, full_text=raw_full_text)
+        if resource_category == "case"
+        else None
+    )
 
     metadata = build_metadata(
         chunks=chunks,
@@ -279,6 +445,8 @@ def ingest_file(
         status=status,
         page_numbers=page_numbers if page_numbers else None,
         source_url=source_url,
+        resource_category=resource_category,
+        case_metadata=case_metadata,
     )
 
     return manager.ingest_law(text_chunks=chunks, metadata_list=metadata)
@@ -338,6 +506,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional public base URL for source files (e.g., https://cdn.example.com/legal)",
     )
+    parser.add_argument(
+        "--resource-category",
+        choices=["auto", "statute", "case"],
+        default="auto",
+        help="Ingestion profile for metadata enrichment (default: auto)",
+    )
+    parser.add_argument(
+        "--ocr-fallback",
+        action="store_true",
+        help="Use OCR fallback for scanned/image-only PDFs when text extraction is empty",
+    )
     return parser.parse_args()
 
 
@@ -355,23 +534,37 @@ def main() -> None:
 
     total_chunks = 0
     results: list[tuple[str, int]] = []
+    failures: list[tuple[str, str]] = []
 
     for file_path in files:
-        ingested_count = ingest_file(
-            manager=manager,
+        resource_category = infer_resource_category(
             file_path=file_path,
-            status=args.status,
-            chunk_size=args.chunk_size,
-            overlap=args.overlap,
-            act_name=args.act,
-            source_base_url=args.source_base_url,
+            explicit_category=args.resource_category,
         )
-        total_chunks += ingested_count
-        results.append((str(file_path), ingested_count))
+        try:
+            ingested_count = ingest_file(
+                manager=manager,
+                file_path=file_path,
+                status=args.status,
+                chunk_size=args.chunk_size,
+                overlap=args.overlap,
+                act_name=args.act,
+                source_base_url=args.source_base_url,
+                resource_category=resource_category,
+                use_ocr_fallback=bool(args.ocr_fallback),
+            )
+            total_chunks += ingested_count
+            results.append((str(file_path), ingested_count))
+        except Exception as exc:
+            failures.append((str(file_path), str(exc)))
 
     print("Ingestion summary:")
     for path, count in results:
         print(f"- {path}: {count} chunks")
+    if failures:
+        print("Skipped files:")
+        for path, reason in failures:
+            print(f"- {path}: {reason}")
     print(f"Total chunks ingested: {total_chunks}")
 
 

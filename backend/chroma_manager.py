@@ -39,6 +39,42 @@ HYBRID_VECTOR_WEIGHT = 0.5
 HYBRID_BM25_WEIGHT = 0.5
 
 
+def _court_precedent_weight(court_name: str) -> float:
+	"""Return relative precedent strength by court hierarchy."""
+	normalized = str(court_name or "").lower()
+	if not normalized:
+		return 0.0
+	if "supreme court" in normalized:
+		return 1.0
+	if "high court" in normalized:
+		return 0.75
+	if "sessions" in normalized:
+		return 0.5
+	if "district" in normalized:
+		return 0.35
+	return 0.25
+
+
+def _year_recency_weight(year_value: Any) -> float:
+	"""Map year to a recency weight in [0, 1]."""
+	try:
+		year = int(year_value)
+	except (TypeError, ValueError):
+		return 0.0
+
+	if year >= 2022:
+		return 1.0
+	if year >= 2018:
+		return 0.8
+	if year >= 2010:
+		return 0.6
+	if year >= 2000:
+		return 0.45
+	if year >= 1990:
+		return 0.3
+	return 0.2
+
+
 def _distance_to_confidence(distance: Any) -> float:
 	"""Convert retrieval distance to a normalized confidence score [0, 1]."""
 	try:
@@ -543,6 +579,7 @@ class ChromaManager:
 		fused = self._fuse_candidates(
 			vector_candidates=vector_candidates,
 			bm25_candidates=bm25_candidates,
+			query_string=query_string,
 			requested_sections=section_refs,
 			requested_articles=article_refs,
 		)
@@ -727,6 +764,14 @@ class ChromaManager:
 							or ""
 						),
 						"section": section_value,
+						"doc_type": str(metadata.get("doc_type") or ""),
+						"case_name": str(metadata.get("case_name") or ""),
+						"citation_text": str(metadata.get("citation_text") or ""),
+						"court": str(metadata.get("court") or ""),
+						"year": metadata.get("year"),
+						"jurisdiction": str(metadata.get("jurisdiction") or ""),
+						"bench": str(metadata.get("bench") or ""),
+						"topic": str(metadata.get("topic") or ""),
 						"page": (
 							metadata.get("page")
 							or metadata.get("page_number")
@@ -894,6 +939,14 @@ class ChromaManager:
 						or ""
 					),
 					"section": section_value,
+					"doc_type": str(metadata.get("doc_type") or ""),
+					"case_name": str(metadata.get("case_name") or ""),
+					"citation_text": str(metadata.get("citation_text") or ""),
+					"court": str(metadata.get("court") or ""),
+					"year": metadata.get("year"),
+					"jurisdiction": str(metadata.get("jurisdiction") or ""),
+					"bench": str(metadata.get("bench") or ""),
+					"topic": str(metadata.get("topic") or ""),
 					"page": (
 						metadata.get("page")
 						or metadata.get("page_number")
@@ -913,6 +966,7 @@ class ChromaManager:
 		self,
 		vector_candidates: list[dict[str, Any]],
 		bm25_candidates: list[dict[str, Any]],
+		query_string: str,
 		requested_sections: list[str],
 		requested_articles: list[str],
 	) -> list[dict[str, Any]]:
@@ -965,6 +1019,26 @@ class ChromaManager:
 				reference_bonus += 0.2
 
 			hybrid_score += reference_bonus
+
+			doc_type = str(item.get("doc_type") or "").lower()
+			is_case_doc = doc_type == "case_law"
+			query_lower = (query_string or "").lower()
+			wants_precedent = any(
+				token in query_lower
+				for token in ("case", "judgment", "judgement", "precedent", "supreme court", "high court")
+			)
+
+			if is_case_doc:
+				court_bonus = 0.12 * _court_precedent_weight(item.get("court"))
+				recency_bonus = 0.08 * _year_recency_weight(item.get("year"))
+				base_case_bonus = 0.22 if wants_precedent else 0.05
+				hybrid_score += base_case_bonus + court_bonus + recency_bonus
+				item["precedent_rank"] = round(court_bonus + recency_bonus + base_case_bonus, 3)
+			else:
+				if wants_precedent:
+					hybrid_score = max(0.0, hybrid_score - 0.08)
+				item["precedent_rank"] = 0.0
+
 			item["confidence"] = max(0.0, min(1.0, hybrid_score))
 
 		if not combined:
@@ -981,10 +1055,19 @@ class ChromaManager:
 			selected.append(
 				{
 					"doc_id": str(item.get("doc_id") or ""),
-					"title": str(item.get("title") or "Legal Source"),
+					"title": str(item.get("case_name") or item.get("title") or "Legal Source"),
 					"source": str(item.get("source") or "unknown"),
 					"source_url": str(item.get("source_url") or ""),
 					"section": str(item.get("section") or ""),
+					"doc_type": str(item.get("doc_type") or ""),
+					"case_name": str(item.get("case_name") or ""),
+					"citation_text": str(item.get("citation_text") or ""),
+					"court": str(item.get("court") or ""),
+					"year": item.get("year"),
+					"jurisdiction": str(item.get("jurisdiction") or ""),
+					"bench": str(item.get("bench") or ""),
+					"topic": str(item.get("topic") or ""),
+					"precedent_rank": float(item.get("precedent_rank", 0.0)),
 					"page": item.get("page"),
 					"snippet": str(item.get("snippet") or ""),
 					"confidence": float(item.get("confidence", 0.0)),

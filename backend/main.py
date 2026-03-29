@@ -67,6 +67,15 @@ class Citation(BaseModel):
     source: str
     source_url: str = ""
     section: str = ""
+    doc_type: str = ""
+    case_name: str = ""
+    citation_text: str = ""
+    court: str = ""
+    year: Optional[int] = None
+    jurisdiction: str = ""
+    bench: str = ""
+    topic: str = ""
+    precedent_rank: Optional[float] = None
     page: Optional[int] = None
     snippet: str
     confidence: float
@@ -455,6 +464,9 @@ def infer_act_filter(query: str) -> Optional[str]:
     if re.search(r"\bbsa\b", normalized):
         return "Bharatiya Sakshya Adhiniyam"
 
+    if any(token in normalized for token in ("case law", "case", "judgment", "judgement", "precedent")):
+        return "Indian Case Law"
+
     return None
 
 
@@ -478,6 +490,9 @@ def infer_act_filters(query: str) -> list[str | None]:
         filters.append("Bharatiya Nyaya Sanhita")
     if re.search(r"\bbsa\b", normalized):
         filters.append("Bharatiya Sakshya Adhiniyam")
+
+    if any(token in normalized for token in ("case law", "case", "judgment", "judgement", "precedent")):
+        filters.append("Indian Case Law")
 
     if any(keyword in normalized for keyword in BAIL_QUERY_KEYWORDS):
         if "Bharatiya Nagarik Suraksha Sanhita" not in filters:
@@ -623,6 +638,9 @@ def _act_aliases(act_name: str) -> list[str]:
 
 def _citation_matches_allowed_acts(citation: Citation, act_filters: list[str | None]) -> bool:
     """Check whether citation appears to belong to one of requested act filters."""
+    if str(citation.doc_type or "").lower() == "case_law":
+        return True
+
     effective_filters = [item for item in act_filters if item]
     if not effective_filters:
         return True
@@ -692,6 +710,36 @@ def _normalize_citation_links(citations: list[Citation]) -> list[Citation]:
         normalized_url = _append_page_anchor(source_url, citation.page)
         normalized.append(citation.model_copy(update={"source_url": normalized_url}))
     return normalized
+
+
+def _format_citation_context(citation: Citation) -> str:
+    """Render a retrieval context block with richer metadata for prompting."""
+    metadata_parts: list[str] = [
+        f"Title: {citation.title}",
+        f"Source: {citation.source}",
+    ]
+
+    if citation.section:
+        metadata_parts.append(f"Section/Article: {citation.section}")
+
+    if str(citation.doc_type or "").lower() == "case_law":
+        if citation.case_name:
+            metadata_parts.append(f"Case: {citation.case_name}")
+        if citation.citation_text:
+            metadata_parts.append(f"Citation: {citation.citation_text}")
+        if citation.court:
+            metadata_parts.append(f"Court: {citation.court}")
+        if citation.year:
+            metadata_parts.append(f"Year: {citation.year}")
+        if citation.jurisdiction:
+            metadata_parts.append(f"Jurisdiction: {citation.jurisdiction}")
+        if citation.bench:
+            metadata_parts.append(f"Bench: {citation.bench}")
+        if citation.topic:
+            metadata_parts.append(f"Topic: {citation.topic}")
+
+    header = " | ".join(metadata_parts)
+    return f"[{header}]\n{citation.snippet}"
 
 
 def _retrieve_legal_citations(masked_query: str) -> tuple[list[Citation], Optional[float]]:
@@ -906,10 +954,7 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                     ]
 
                 retrieved_context = [
-                    (
-                        f"[Act: {item.title} | Source: {item.source} | Section: {item.section}]\n"
-                        f"{item.snippet}"
-                    )
+                    _format_citation_context(item)
                     for item in citations
                     if item.snippet
                 ]
@@ -1343,10 +1388,7 @@ async def analyze_fir_document(
                 overall_confidence = None
 
         retrieved_context = [
-            (
-                f"[Act: {item.title} | Source: {item.source} | Section: {item.section}]\n"
-                f"{item.snippet}"
-            )
+            _format_citation_context(item)
             for item in citations
             if item.snippet
         ]
