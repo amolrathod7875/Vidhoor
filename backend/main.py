@@ -35,20 +35,42 @@ if _LEGAL_DOCS_DIR.exists() and _LEGAL_DOCS_DIR.is_dir():
     app.mount("/legal", StaticFiles(directory=str(_LEGAL_DOCS_DIR)), name="legal")
 
 # VERY IMPORTANT: Configure CORS so your React frontend can talk to this backend
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8080",
+    "https://vidhoor-lizs.vercel.app",
+]
+
+
+def _build_cors_allowed_origins() -> list[str]:
+    configured_origins_raw = os.getenv("CORS_ALLOW_ORIGINS", "")
+    configured_origins = [
+        origin.strip()
+        for origin in configured_origins_raw.split(",")
+        if origin.strip()
+    ]
+    merged_origins = DEFAULT_CORS_ORIGINS + configured_origins
+    unique_origins = list(dict.fromkeys(merged_origins))
+    return unique_origins
+
+
+cors_allowed_origins = _build_cors_allowed_origins()
+cors_allow_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", r"https://.*\.vercel\.app")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:8080",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:8080",
-    ],
+    allow_origins=cors_allowed_origins,
+    allow_origin_regex=cors_allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger.info("CORS allowed origins configured: %s", cors_allowed_origins)
 
 # --- Pydantic Models for strict data validation ---
 

@@ -101,6 +101,11 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 - `APP_PUBLIC_BASE_URL`
 - `LEGAL_SOURCE_BASE_URL`
 
+### CORS
+
+- `CORS_ALLOW_ORIGINS` (comma-separated origins, optional)
+- `CORS_ALLOW_ORIGIN_REGEX` (optional, default allows `https://*.vercel.app`)
+
 ### Live Indian Kanoon links
 
 - `ENABLE_INDIAN_KANOON_LINKS` (default `true`)
