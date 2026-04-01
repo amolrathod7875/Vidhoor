@@ -153,7 +153,9 @@ const SUPPORTED_DRAFT_TYPES = new Set([
 const resolveApiBaseUrl = (): string => {
   const configured = String(import.meta.env.VITE_API_BASE_URL || "").trim();
   if (configured) {
-    return configured.replace(/\/$/, "");
+    return configured
+      .replace(/\/$/, "")
+      .replace(/\/api$/i, "");
   }
 
   const host = String(window.location.hostname || "").toLowerCase();
