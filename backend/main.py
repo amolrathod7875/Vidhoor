@@ -601,7 +601,7 @@ def _should_fetch_indian_kanoon_links(query: str) -> bool:
 
     Trigger modes via env INDIAN_KANOON_TRIGGER_MODE:
     - recent_only: only recent/current/year case queries
-    - case_queries: any legal case/judgment request
+    - case_queries: any legal case/judgment request or legal query mentioning acts/sections/crime types
     - always_legal: any legal query
     """
     mode = os.environ.get("INDIAN_KANOON_TRIGGER_MODE", "case_queries").strip().lower()
@@ -610,7 +610,36 @@ def _should_fetch_indian_kanoon_links(query: str) -> bool:
         return _is_recent_case_query(query)
     if mode == "always_legal":
         return is_legal_query(query)
-    return _is_case_request_query(query) or _is_recent_case_query(query)
+    
+    # Default case_queries: case/judgment intent OR legal query with act/section mentions
+    if _is_case_request_query(query) or _is_recent_case_query(query):
+        return True
+    
+    # Also fetch for legal queries that mention specific acts, sections, or crime types
+    if is_legal_query(query):
+        normalized = str(query or "").lower()
+        
+        # Check for act mentions
+        has_act_mention = any(
+            act in normalized 
+            for act in ("bns", "bnss", "bsa", "ipc", "crpc", "bharatiya", "constitution")
+        )
+        
+        # Check for section/article references
+        has_section_mention = bool(re.search(r"\b(section|article|sec|art)\s+\d+", normalized, flags=re.IGNORECASE))
+        
+        # Check for crime/offense types that typically have case law
+        has_crime_type = any(
+            crime in normalized
+            for crime in ("rape", "sexual assault", "assault", "murder", "theft", "fraud", 
+                         "harassment", "dowry", "child abuse", "pornography", "offense", "offence",
+                         "domestic violence", "cruelty", "extortion", "kidnapping", "abduction")
+        )
+        
+        if has_act_mention or has_section_mention or has_crime_type:
+            return True
+    
+    return False
 
 
 def _normalize_reference(value: str | None) -> str:

@@ -1,5 +1,10 @@
 cd backend
+#start the docker chromadb command 
 docker compose -f docker-compose.chroma.yml up -d
-python ingest_legal_resources.py --input-dir data/Case --resource-category case --status active --ocr-fallback
 
+#ingestion of all the documents including data and data/Case
+python ingest_legal_resources.py --input-dir data --resource-category case --status active --ocr-fallback
+
+#uvicorn backend start engine 
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
+
