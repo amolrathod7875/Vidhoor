@@ -84,21 +84,25 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ## Required Environment Variables
 
 ### Core
+
 - `CEREBRAS_API_KEY`
 - `CHROMA_HOST` (default `127.0.0.1`)
 - `CHROMA_PORT` (default `8000`)
 
 ### Oracle
+
 - `ORACLE_USER`, `ORACLE_PASSWORD`, `ORACLE_DSN`
 - `ORACLE_CONFIG_DIR`, `ORACLE_WALLET_LOCATION`, `ORACLE_WALLET_PASSWORD`
 
 ## Optional Environment Variables
 
 ### Source links + app URL
+
 - `APP_PUBLIC_BASE_URL`
 - `LEGAL_SOURCE_BASE_URL`
 
 ### Live Indian Kanoon links
+
 - `ENABLE_INDIAN_KANOON_LINKS` (default `true`)
 - `INDIAN_KANOON_MAX_LINKS` (default `3`, recommended <= `5`)
 - `INDIAN_KANOON_TRIGGER_MODE`
@@ -107,12 +111,14 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
   - `always_legal`: all legal queries
 
 ### OCR
+
 - `OCR_SPACE_API_KEY`
 - `OCR_SPACE_ENDPOINT`, `OCR_SPACE_LANGUAGE`, `OCR_SPACE_ENGINE`
 - `OCR_SPACE_TIMEOUT_SECONDS`, `OCR_SPACE_MAX_RETRIES`, `OCR_SPACE_RETRY_DELAY_SECONDS`
 - `HELSINKI_DEVANAGARI_FALLBACK`
 
 ### Draft email
+
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`
 - `SMTP_FROM_EMAIL`, `SMTP_USE_TLS`
 
@@ -121,3 +127,24 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 - Responses are citation-grounded where available; legal prompts are strict about context use.
 - Indian Kanoon results are fetched live and appended as links; they are not ingested into Chroma.
 - Keep `wallet/` and secret files out of source control where possible.
+
+## Backend Deployment (Oracle Cloud + Docker)
+
+Backend-only deployment assets are available under `deploy/`:
+
+- `deploy/build_and_push_ocir.sh` — build image and push to OCIR
+- `deploy/deploy_backend_oci.sh` — pull image and start stack on OCI host
+- `deploy/docker-compose.oci.yml` — backend + chroma + nginx runtime stack
+- `deploy/nginx.conf` — reverse proxy config
+- `deploy/DEPLOYMENT.md` — step-by-step runbook
+
+Quick path:
+
+```bash
+cd backend
+# 1) push image to OCIR
+bash deploy/build_and_push_ocir.sh
+
+# 2) on OCI host, after configuring BACKEND_IMAGE and .env
+bash deploy/deploy_backend_oci.sh
+```
