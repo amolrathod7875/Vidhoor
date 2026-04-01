@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header, Depends, UploadFile, File, Form, Query
+from fastapi import FastAPI, HTTPException, Header, Depends, UploadFile, File, Form, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
@@ -9,7 +9,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 import uvicorn
 
@@ -810,14 +810,35 @@ def _is_http_url(value: str | None) -> bool:
     return text.startswith("http://") or text.startswith("https://")
 
 
-def _build_source_url_from_base(source_name: str) -> str:
-    """Build source URL from configured legal source base URL and source filename."""
+def _derive_legal_source_base_url(request: Request | None = None) -> str:
+    """Resolve public base URL for legal static files."""
     configured_base_url = os.environ.get("LEGAL_SOURCE_BASE_URL", "").strip().rstrip("/")
-    fallback_base_url = os.environ.get("APP_PUBLIC_BASE_URL", "http://127.0.0.1:8001").strip().rstrip("/")
-    if fallback_base_url:
-        fallback_base_url = f"{fallback_base_url}/legal"
+    if configured_base_url:
+        return configured_base_url
 
-    base_url = configured_base_url or fallback_base_url
+    fallback_base_url = os.environ.get("APP_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if fallback_base_url:
+        return f"{fallback_base_url}/legal"
+
+    if request:
+        return f"{request.url.scheme}://{request.url.netloc}/legal"
+
+    return ""
+
+
+def _is_local_source_url(value: str | None) -> bool:
+    """Check whether URL points to localhost/loopback host."""
+    candidate = str(value or "").strip()
+    if not _is_http_url(candidate):
+        return False
+
+    host = (urlsplit(candidate).hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _build_source_url_from_base(source_name: str, request: Request | None = None) -> str:
+    """Build source URL from configured or request-derived legal source base URL and source filename."""
+    base_url = _derive_legal_source_base_url(request)
     if not base_url:
         return ""
 
@@ -826,6 +847,38 @@ def _build_source_url_from_base(source_name: str) -> str:
         return ""
 
     return f"{base_url}/{quote(filename)}"
+
+
+def _normalize_source_url(source_url: str, source_name: str, request: Request | None = None) -> str:
+    """Normalize source URL and rewrite localhost links to a public legal base URL."""
+    cleaned_source_url = str(source_url or "").strip()
+    if not _is_http_url(cleaned_source_url):
+        return _build_source_url_from_base(source_name, request)
+
+    if not _is_local_source_url(cleaned_source_url):
+        return cleaned_source_url
+
+    legal_base_url = _derive_legal_source_base_url(request)
+    if not legal_base_url:
+        return cleaned_source_url
+
+    parsed = urlsplit(cleaned_source_url)
+    raw_path = str(parsed.path or "").strip()
+    if raw_path.startswith("/legal/"):
+        relative_path = raw_path[len("/legal/"):]
+    else:
+        relative_path = Path(raw_path).name
+
+    if not relative_path:
+        return cleaned_source_url
+
+    rebuilt_url = f"{legal_base_url}/{quote(relative_path, safe='/')}"
+    if parsed.query:
+        rebuilt_url = f"{rebuilt_url}?{parsed.query}"
+    if parsed.fragment:
+        rebuilt_url = f"{rebuilt_url}#{parsed.fragment}"
+
+    return rebuilt_url
 
 
 def _append_page_anchor(url: str, page: int | None) -> str:
@@ -839,13 +892,15 @@ def _append_page_anchor(url: str, page: int | None) -> str:
     return f"{url}#page={int(page)}"
 
 
-def _normalize_citation_links(citations: list[Citation]) -> list[Citation]:
+def _normalize_citation_links(citations: list[Citation], request: Request | None = None) -> list[Citation]:
     """Ensure citations include usable source URLs with optional page deep links."""
     normalized: list[Citation] = []
     for citation in citations:
-        source_url = str(citation.source_url or "").strip()
-        if not _is_http_url(source_url):
-            source_url = _build_source_url_from_base(citation.source)
+        source_url = _normalize_source_url(
+            source_url=str(citation.source_url or ""),
+            source_name=citation.source,
+            request=request,
+        )
 
         normalized_url = _append_page_anchor(source_url, citation.page)
         normalized.append(citation.model_copy(update={"source_url": normalized_url}))
@@ -919,7 +974,7 @@ def _build_related_case_links_markdown(case_links: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def _retrieve_legal_citations(masked_query: str) -> tuple[list[Citation], Optional[float]]:
+def _retrieve_legal_citations(masked_query: str, request: Request | None = None) -> tuple[list[Citation], Optional[float]]:
     """Retrieve citation objects and overall confidence for a query."""
     chroma_manager = get_chroma_manager()
     act_filters = infer_act_filters(masked_query)
@@ -950,7 +1005,7 @@ def _retrieve_legal_citations(masked_query: str) -> tuple[list[Citation], Option
         if _citation_matches_allowed_acts(citation, act_filters)
     ]
     citations.sort(key=lambda item: item.confidence, reverse=True)
-    citations = _normalize_citation_links(citations[:8])
+    citations = _normalize_citation_links(citations[:8], request)
 
     if not citations:
         return [], None
@@ -1016,24 +1071,24 @@ async def health_check():
     return {"status": "Vidhoor Backend is live and waiting for legal queries."}
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def process_chat(request: ChatRequest, user: dict = Depends(verify_token)):
+async def process_chat(chat_request: ChatRequest, request: Request, user: dict = Depends(verify_token)):
     try:
         global _bm25_refresh_counter
         pii_vault = get_pii_vault()
         llm_engine = get_llm_engine()
-        masked_message, pii_map = pii_vault.mask_text(request.message)
+        masked_message, pii_map = pii_vault.mask_text(chat_request.message)
 
         document_pairs: list[tuple[str, str]] = []
-        multi_contexts = [str(item or "").strip() for item in (request.document_contexts or []) if str(item or "").strip()]
-        multi_names = [str(item or "").strip() for item in (request.document_names or [])]
+        multi_contexts = [str(item or "").strip() for item in (chat_request.document_contexts or []) if str(item or "").strip()]
+        multi_names = [str(item or "").strip() for item in (chat_request.document_names or [])]
         if multi_contexts:
             for index, context in enumerate(multi_contexts, start=1):
                 name = multi_names[index - 1] if index - 1 < len(multi_names) and multi_names[index - 1] else f"Document {index}"
                 document_pairs.append((name, context))
 
-        single_context = (request.document_context or "").strip()
+        single_context = (chat_request.document_context or "").strip()
         if not document_pairs and single_context:
-            document_pairs.append((request.document_name or "uploaded document", single_context))
+            document_pairs.append((chat_request.document_name or "uploaded document", single_context))
 
         document_context = ""
         if document_pairs:
@@ -1048,7 +1103,7 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
             masked_document_context, _ = pii_vault.mask_text(document_context)
 
         document_label = ", ".join(name for name, _ in document_pairs[:5]) if document_pairs else None
-        session_id = request.session_id or f"session_{uuid4().hex}"
+        session_id = chat_request.session_id or f"session_{uuid4().hex}"
         citations: list[Citation] = []
         overall_confidence: Optional[float] = None
 
@@ -1106,7 +1161,7 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                 ]
                 citations.sort(key=lambda item: item.confidence, reverse=True)
                 citations = citations[:8]
-                citations = _normalize_citation_links(citations)
+                citations = _normalize_citation_links(citations, request)
 
                 requested_references = _extract_requested_references(masked_message)
 
@@ -1199,14 +1254,14 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
         
         final_readable_response = pii_vault.unmask_text(ai_response_masked, pii_map)
 
-        should_try_indian_kanoon = _should_fetch_indian_kanoon_links(request.message)
+        should_try_indian_kanoon = _should_fetch_indian_kanoon_links(chat_request.message)
         if should_try_indian_kanoon:
             try:
                 include_related_links = os.environ.get("ENABLE_INDIAN_KANOON_LINKS", "true").strip().lower() not in {"0", "false", "no"}
                 if include_related_links:
                     max_links = int(os.environ.get("INDIAN_KANOON_MAX_LINKS", "3") or "3")
                     case_links = fetch_indian_kanoon_case_links(
-                        query=request.message,
+                        query=chat_request.message,
                         max_links=max_links,
                     )
                     links_section = _build_related_case_links_markdown(case_links)
@@ -1216,7 +1271,7 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                 logger.warning("Failed to fetch Indian Kanoon related links: %s", exc)
         
         # Step 5: Save to Oracle DB (if NOT temporary and authenticated)
-        if not request.is_temporary_chat and user and user.get("uid"):
+        if not chat_request.is_temporary_chat and user and user.get("uid"):
             try:
                 chat_repo = get_chat_repo()
                 user_id = str(user["uid"])
@@ -1228,14 +1283,14 @@ async def process_chat(request: ChatRequest, user: dict = Depends(verify_token))
                 session_title: str | None = None
                 if is_first_turn:
                     session_title = llm_engine.generate_session_title(
-                        user_message=request.message,
+                        user_message=chat_request.message,
                         assistant_message=final_readable_response,
                     )
 
                 chat_repo.save_chat_turn(
                     user_id=user_id,
                     session_id=session_id,
-                    user_message=request.message,
+                    user_message=chat_request.message,
                     assistant_message=final_readable_response,
                     masked_entities=pii_map,
                     session_title=session_title,
@@ -1486,6 +1541,7 @@ async def export_saved_draft(
 
 @app.post("/api/fir/analyze", response_model=OCRAnalyzeResponse)
 async def analyze_fir_document(
+    request: Request,
     file: UploadFile = File(...),
     query: str | None = Form(default=None),
     encrypted_payload_b64: str | None = Form(default=None),
@@ -1562,7 +1618,7 @@ async def analyze_fir_document(
         if _bm25_refresh_counter % 5 == 0:
             get_chroma_manager().refresh_bm25_from_oracle(filter_status="active", filter_act=None)
 
-        citations, overall_confidence = _retrieve_legal_citations(legal_query)
+        citations, overall_confidence = _retrieve_legal_citations(legal_query, request)
 
         if citations and requested_references:
             matched_citations = [
