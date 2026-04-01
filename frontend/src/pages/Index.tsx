@@ -160,7 +160,7 @@ const resolveApiBaseUrl = (): string => {
 
   const host = String(window.location.hostname || "").toLowerCase();
   const isLocalHost = host === "localhost" || host === "127.0.0.1";
-  return isLocalHost ? "http://127.0.0.1:8001" : "/api";
+  return isLocalHost ? "http://127.0.0.1:8001" : "";
 };
 
 const API_BASE_URL = resolveApiBaseUrl();
