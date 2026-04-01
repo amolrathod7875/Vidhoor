@@ -150,7 +150,18 @@ const SUPPORTED_DRAFT_TYPES = new Set([
   "custom",
 ]);
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8001";
+const resolveApiBaseUrl = (): string => {
+  const configured = String(import.meta.env.VITE_API_BASE_URL || "").trim();
+  if (configured) {
+    return configured.replace(/\/$/, "");
+  }
+
+  const host = String(window.location.hostname || "").toLowerCase();
+  const isLocalHost = host === "localhost" || host === "127.0.0.1";
+  return isLocalHost ? "http://127.0.0.1:8001" : "/api";
+};
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 let nextMessageId = 1;
 
