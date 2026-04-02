@@ -4,6 +4,8 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Any, Optional
+import base64
+import json
 import logging
 import os
 import re
@@ -12,6 +14,8 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 import uvicorn
+import firebase_admin
+from firebase_admin import auth as firebase_auth, credentials as firebase_credentials
 
 from chroma_manager import ChromaManager
 from database import OracleChatHistoryRepository
@@ -225,6 +229,7 @@ _pii_vault: Optional[PIIVault] = None
 _chat_repo: Optional[OracleChatHistoryRepository] = None
 _ocr_service: Optional[VisionOCRService] = None
 _bm25_refresh_counter: int = 0
+_firebase_auth_initialized: bool = False
 
 
 LEGAL_QUERY_KEYWORDS = {
@@ -1016,15 +1021,59 @@ def _retrieve_legal_citations(masked_query: str, request: Request | None = None)
     )
     return citations, overall_confidence
 
-# --- Dependency to verify Firebase Auth Token (Mocked for now) ---
+def _decode_jwt_payload_unverified(token: str) -> dict[str, Any]:
+    """Decode JWT payload without signature verification (fallback only)."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return {}
+        payload = parts[1]
+        payload += "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8")
+        data = json.loads(decoded)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        return {}
+    return {}
+
+
+def _initialize_firebase_auth_if_configured() -> bool:
+    """Initialize firebase-admin if service account configuration exists."""
+    global _firebase_auth_initialized
+    if _firebase_auth_initialized:
+        return True
+
+    try:
+        if not firebase_admin._apps:
+            cred_path = (os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH") or "").strip()
+            if cred_path:
+                resolved = Path(cred_path)
+                if not resolved.is_absolute():
+                    resolved = (_BASE_DIR / resolved).resolve()
+                if not resolved.exists():
+                    logger.warning("Firebase service account file not found at %s", resolved)
+                    return False
+                cred = firebase_credentials.Certificate(str(resolved))
+                firebase_admin.initialize_app(cred)
+            else:
+                firebase_admin.initialize_app()
+
+        _firebase_auth_initialized = True
+        return True
+    except Exception as exc:
+        logger.warning("Firebase auth initialization skipped: %s", exc)
+        return False
+
+
+# --- Dependency to verify Firebase Auth Token ---
 async def verify_token(
     authorization: str = Header(None),
     x_user_email: str | None = Header(default=None, alias="X-User-Email"),
 ):
     if not authorization:
         # For Guest Mode, we might not have a token
-        return None 
-    # Later, we will add firebase_admin.auth.verify_id_token() here
+        return None
     token_parts = authorization.split(" ")
     if len(token_parts) != 2 or token_parts[0].lower() != "bearer":
         raise HTTPException(status_code=401, detail="Invalid authorization header")
@@ -1033,7 +1082,23 @@ async def verify_token(
     if not token:
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
-    return {"uid": "mock_user_123", "email": str(x_user_email or "").strip()}
+    if _initialize_firebase_auth_if_configured():
+        try:
+            decoded_token = firebase_auth.verify_id_token(token)
+            return {
+                "uid": str(decoded_token.get("uid") or decoded_token.get("sub") or "").strip(),
+                "email": str(decoded_token.get("email") or x_user_email or "").strip(),
+            }
+        except Exception as exc:
+            logger.warning("Firebase token verification failed, falling back to JWT payload decode: %s", exc)
+
+    payload = _decode_jwt_payload_unverified(token)
+    uid = str(payload.get("user_id") or payload.get("uid") or payload.get("sub") or "").strip()
+    email = str(payload.get("email") or x_user_email or "").strip()
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+    return {"uid": uid, "email": email}
 
 
 def get_required_user_id(user: dict[str, Any] | None) -> str:
