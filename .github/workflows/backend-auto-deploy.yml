@@ -8,14 +8,11 @@ on:
       - ".github/workflows/backend-auto-deploy.yml"
   workflow_dispatch:
 
-env:
-  IMAGE_REPO: vidhoor-backend
-
 jobs:
   deploy-backend:
     runs-on: ubuntu-latest
     env:
-      IMAGE_URI_BASE: ${{ secrets.OCI_REGION }}.ocir.io/${{ secrets.OCI_NAMESPACE }}/${{ env.IMAGE_REPO }}
+      IMAGE_URI_BASE: ${{ secrets.OCI_REGION }}.ocir.io/${{ secrets.OCI_NAMESPACE }}/vidhoor-backend
 
     steps:
       - name: Checkout
