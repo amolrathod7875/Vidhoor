@@ -8,9 +8,14 @@ on:
       - ".github/workflows/backend-auto-deploy.yml"
   workflow_dispatch:
 
+env:
+  IMAGE_REPO: vidhoor-backend
+
 jobs:
   deploy-backend:
     runs-on: ubuntu-latest
+    env:
+      IMAGE_URI_BASE: ${{ secrets.OCI_REGION }}.ocir.io/${{ secrets.OCI_NAMESPACE }}/${{ env.IMAGE_REPO }}
 
     steps:
       - name: Checkout
@@ -32,9 +37,11 @@ jobs:
           context: ./backend
           push: true
           platforms: linux/arm64
+          cache-from: type=gha,scope=vidhoor-backend
+          cache-to: type=gha,mode=max,scope=vidhoor-backend
           tags: |
-            ${{ secrets.OCI_REGION }}.ocir.io/${{ secrets.OCI_NAMESPACE }}/vidhoor-backend:latest
-            ${{ secrets.OCI_REGION }}.ocir.io/${{ secrets.OCI_NAMESPACE }}/vidhoor-backend:${{ github.sha }}
+            ${{ env.IMAGE_URI_BASE }}:latest
+            ${{ env.IMAGE_URI_BASE }}:${{ github.sha }}
 
       - name: Deploy on OCI VM via SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -51,6 +58,6 @@ jobs:
             export OCI_NAMESPACE='${{ secrets.OCI_NAMESPACE }}'
             export OCI_REGISTRY_USERNAME='${{ secrets.OCI_REGISTRY_USERNAME }}'
             export OCI_AUTH_TOKEN='${{ secrets.OCI_AUTH_TOKEN }}'
-            export BACKEND_IMAGE='${{ secrets.OCI_REGION }}.ocir.io/${{ secrets.OCI_NAMESPACE }}/vidhoor-backend:latest'
+            export BACKEND_IMAGE='${{ env.IMAGE_URI_BASE }}:${{ github.sha }}'
 
             bash deploy/deploy_backend_oci.sh

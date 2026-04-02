@@ -75,9 +75,10 @@ This repo now includes workflow:
 
 What it does on push to `main` (backend changes):
 
-1. Builds backend image for `linux/arm64`
+1. Builds backend image for `linux/arm64` with GitHub Actions layer cache
 2. Pushes to OCIR (`latest` + commit SHA tag)
-3. SSHes into OCI VM and runs `deploy/deploy_backend_oci.sh`
+3. SSHes into OCI VM and runs `deploy/deploy_backend_oci.sh` with SHA-pinned `BACKEND_IMAGE`
+4. VM pulls/recreates only `backend` container (no full stack rebuild)
 
 Configure these GitHub repository secrets:
 
@@ -95,6 +96,7 @@ Notes:
 - VM path is assumed as `/opt/vidhoor/backend`.
 - Ensure updated `deploy/` scripts from this repo are present on VM.
 - If VM does not pull latest repo automatically, manually sync backend folder once after adding this workflow.
+- Deploy script also prunes stale images older than 7 days to reduce disk usage.
 
 ## Notes
 

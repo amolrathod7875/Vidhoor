@@ -32,9 +32,12 @@ fi
 
 echo "${OCI_AUTH_TOKEN}" | docker login "${OCI_REGION}.ocir.io" -u "${REGISTRY_USERNAME}" --password-stdin
 
-echo "Pulling and starting backend stack..."
-docker compose -f deploy/docker-compose.oci.yml pull
-docker compose -f deploy/docker-compose.oci.yml up -d
+echo "Pulling and recreating backend service only..."
+docker compose -f deploy/docker-compose.oci.yml pull backend
+docker compose -f deploy/docker-compose.oci.yml up -d --no-deps --force-recreate backend
+
+echo "Pruning stale images to save disk..."
+docker image prune -af --filter "until=168h" || true
 
 echo "Deployment complete."
 docker compose -f deploy/docker-compose.oci.yml ps
