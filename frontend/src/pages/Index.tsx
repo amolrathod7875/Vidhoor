@@ -1213,6 +1213,7 @@ function ChatApp() {
           }}
           connectedDocuments={connectedDocuments}
           legalDocsBaseUrl={LEGAL_DOCS_BASE_URL}
+          apiBaseUrl={API_BASE_URL}
           tempChat={tempChat}
         />
 

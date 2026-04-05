@@ -15,13 +15,23 @@ import {
   Pencil,
   Pin,
   PinOff,
+  CheckCircle2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Textarea } from "@/components/ui/textarea";
 import { useTheme } from "@/hooks/useTheme";
 import { useAuth } from "@/hooks/useAuth";
 import { ChatSession } from "@/types/chat";
 import { cn } from "@/lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Sidebar,
   SidebarContent,
@@ -58,6 +68,7 @@ interface Props {
   onPinSession: (id: string) => void;
   connectedDocuments: ConnectedDocumentItem[];
   legalDocsBaseUrl: string;
+  apiBaseUrl: string;
   tempChat: boolean;
 }
 
@@ -72,6 +83,7 @@ export function VidhoorSidebar({
   onPinSession,
   connectedDocuments,
   legalDocsBaseUrl,
+  apiBaseUrl,
   tempChat,
 }: Props) {
   const { theme, setTheme } = useTheme();
@@ -80,6 +92,12 @@ export function VidhoorSidebar({
   const collapsed = state === "collapsed";
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [allowFollowUp, setAllowFollowUp] = useState(false);
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
+  const [feedbackError, setFeedbackError] = useState("");
   const editRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -105,9 +123,74 @@ export function VidhoorSidebar({
 
   const userLabel = user?.displayName || user?.email || "Guest";
 
+  const resetFeedbackState = () => {
+    setFeedbackMessage("");
+    setAllowFollowUp(false);
+    setFeedbackSubmitting(false);
+    setFeedbackSubmitted(false);
+    setFeedbackError("");
+  };
+
   const openFeedback = () => {
-    const subject = encodeURIComponent("Vidhoor feedback");
-    window.open(`mailto:support@vidhoor.ai?subject=${subject}`, "_self");
+    resetFeedbackState();
+    setFeedbackOpen(true);
+  };
+
+  const closeFeedbackDialog = () => {
+    setFeedbackOpen(false);
+    setFeedbackSubmitting(false);
+    setFeedbackError("");
+  };
+
+  const submitFeedback = async () => {
+    const message = feedbackMessage.trim();
+    if (message.length < 5) {
+      setFeedbackError("Please describe your feedback in at least 5 characters.");
+      return;
+    }
+
+    if (!apiBaseUrl) {
+      setFeedbackError("Feedback service is not configured right now.");
+      return;
+    }
+
+    setFeedbackSubmitting(true);
+    setFeedbackError("");
+
+    try {
+      let idToken = "";
+      if (user?.getIdToken) {
+        idToken = await user.getIdToken();
+      }
+
+      const response = await fetch(`${apiBaseUrl}/api/feedback`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+          ...(user?.email ? { "X-User-Email": user.email } : {}),
+        },
+        body: JSON.stringify({
+          message,
+          allow_follow_up: allowFollowUp,
+          page_url: window.location.href,
+          user_agent: navigator.userAgent,
+          app_version: String(import.meta.env.VITE_APP_VERSION || ""),
+          context: "settings-menu-feedback",
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Feedback request failed (${response.status})`);
+      }
+
+      setFeedbackSubmitted(true);
+    } catch (error) {
+      console.error(error);
+      setFeedbackError("Could not send feedback. Please try again.");
+    } finally {
+      setFeedbackSubmitting(false);
+    }
   };
 
   const toEncodedRelativePath = (relativePath: string): string =>
@@ -124,6 +207,7 @@ export function VidhoorSidebar({
   };
 
   return (
+    <>
     <Sidebar collapsible="icon" className="border-r-0">
       <SidebarHeader className="p-3">
         <Button
@@ -343,7 +427,13 @@ export function VidhoorSidebar({
 
             <DropdownMenuSeparator />
 
-            <DropdownMenuItem onSelect={openFeedback} className="gap-2 rounded-lg text-sm">
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                openFeedback();
+              }}
+              className="gap-2 rounded-lg text-sm"
+            >
               <MessageSquareMore className="h-4 w-4" />
               Send feedback
             </DropdownMenuItem>
@@ -359,5 +449,79 @@ export function VidhoorSidebar({
         </DropdownMenu>
       </SidebarFooter>
     </Sidebar>
+
+    <Dialog open={feedbackOpen} onOpenChange={setFeedbackOpen}>
+      <DialogContent className="sm:max-w-md">
+        {feedbackSubmitted ? (
+          <div className="space-y-5">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <CheckCircle2 className="h-8 w-8" />
+            </div>
+            <div className="space-y-2 text-center">
+              <DialogTitle>Report sent. Thank you!</DialogTitle>
+              <DialogDescription>
+                We use feedback like yours to improve Vidhoor and fix issues quickly.
+              </DialogDescription>
+            </div>
+            <Button type="button" className="w-full" onClick={closeFeedbackDialog}>
+              Close
+            </Button>
+          </div>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Send feedback</DialogTitle>
+              <DialogDescription>
+                Tell us what prompted this feedback. Please do not include sensitive information.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3">
+              <label htmlFor="feedback-message" className="text-sm font-medium">
+                Describe your feedback
+              </label>
+              <Textarea
+                id="feedback-message"
+                value={feedbackMessage}
+                onChange={(event) => setFeedbackMessage(event.target.value)}
+                placeholder="Tell us what prompted this feedback..."
+                className="min-h-[140px]"
+                maxLength={5000}
+              />
+
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={allowFollowUp}
+                  onChange={(event) => setAllowFollowUp(event.target.checked)}
+                  className="h-4 w-4 rounded border-input"
+                />
+                We may email you for more information or updates.
+              </label>
+
+              {feedbackError ? (
+                <p className="text-sm text-destructive">{feedbackError}</p>
+              ) : null}
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={closeFeedbackDialog} disabled={feedbackSubmitting}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  void submitFeedback();
+                }}
+                disabled={feedbackSubmitting || feedbackMessage.trim().length < 5}
+              >
+                {feedbackSubmitting ? "Sending..." : "Send"}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
