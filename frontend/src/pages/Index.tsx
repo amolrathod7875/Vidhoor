@@ -206,6 +206,7 @@ function ChatApp() {
   const [draftFlow, setDraftFlow] = useState<DraftFlowState>({ step: "idle" });
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [composerText, setComposerText] = useState("");
   const [showDraftTile, setShowDraftTile] = useState(true);
   const [tempChat, setTempChat] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
@@ -562,6 +563,10 @@ function ChatApp() {
     }
   };
 
+  const handleEditUserMessage = (text: string) => {
+    setComposerText(text);
+  };
+
   const buildSessionDraftFacts = useCallback((session: ChatSession | null): string => {
     if (!session || session.messages.length === 0) {
       return "";
@@ -822,9 +827,11 @@ function ChatApp() {
   const handleNewChat = () => {
     setActiveId(null);
     setActiveDocuments([]);
+    setComposerText("");
   };
 
   const handleSelectSession = async (id: string) => {
+    setComposerText("");
     setActiveId(id);
     if (!tempChat) {
       await fetchSessionMessages(id);
@@ -1423,6 +1430,7 @@ function ChatApp() {
             isTyping={isTyping}
             isHistoryLoading={activeId !== null && loadingSessionId === activeId}
             onChipClick={handleSend}
+            onEditUserMessage={handleEditUserMessage}
           />
 
           {/* Input */}
@@ -1430,6 +1438,8 @@ function ChatApp() {
             <ChatInput
               onSend={handleSend}
               onUploadFiles={handleUploadFiles}
+              value={composerText}
+              onValueChange={setComposerText}
               onCreateDraft={() => {
                 void handleGenerateDraft();
               }}

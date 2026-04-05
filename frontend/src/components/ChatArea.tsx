@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from "react";
 import { Message } from "@/types/chat";
-import { Scale, Copy, Check } from "lucide-react";
+import { Scale, Copy, Check, Pencil } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
@@ -47,6 +47,7 @@ interface Props {
   isTyping: boolean;
   isHistoryLoading: boolean;
   onChipClick?: (text: string) => void;
+  onEditUserMessage?: (text: string) => void;
 }
 
 export function ChatArea({
@@ -54,6 +55,7 @@ export function ChatArea({
   isTyping,
   isHistoryLoading,
   onChipClick,
+  onEditUserMessage,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -169,7 +171,21 @@ export function ChatArea({
                   </ReactMarkdown>
                 </div>
               ) : (
-                msg.content
+                <div className="space-y-1.5">
+                  <div>{msg.content}</div>
+                  {onEditUserMessage && (
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => onEditUserMessage(msg.content)}
+                        className="inline-flex items-center gap-1 rounded-md border border-border/50 px-2 py-1 text-xs text-chat-bubble-foreground/90 transition-colors hover:bg-black/10"
+                        title="Edit and resend"
+                      >
+                        <Pencil className="h-3 w-3" />
+                        Edit
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
               {msg.role === "assistant" && (
                 <div className="mt-2 flex justify-end gap-2">

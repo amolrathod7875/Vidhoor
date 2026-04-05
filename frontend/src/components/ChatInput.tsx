@@ -14,6 +14,8 @@ import { useAuth } from "@/hooks/useAuth";
 interface Props {
   onSend: (text: string) => void;
   onUploadFiles: (files: File[]) => void;
+  value?: string;
+  onValueChange?: (value: string) => void;
   onCreateDraft?: () => void;
   disabled: boolean;
   isUploading?: boolean;
@@ -33,6 +35,8 @@ const MAX_ACTIVE_DOCUMENTS = 5;
 export function ChatInput({
   onSend,
   onUploadFiles,
+  value,
+  onValueChange,
   onCreateDraft,
   disabled,
   isUploading = false,
@@ -45,6 +49,8 @@ export function ChatInput({
   const [text, setText] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { user } = useAuth();
+  const composerText = value ?? text;
+  const setComposerText = onValueChange ?? setText;
 
   const isBlocked = !user && disabled;
 
@@ -61,10 +67,10 @@ export function ChatInput({
   };
 
   const handleSend = () => {
-    const trimmed = text.trim();
+    const trimmed = composerText.trim();
     if (!trimmed || isBlocked) return;
     onSend(trimmed);
-    setText("");
+    setComposerText("");
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -200,8 +206,8 @@ export function ChatInput({
           </DropdownMenuContent>
         </DropdownMenu>
         <TextareaAutosize
-          value={text}
-          onChange={(e) => setText(e.target.value)}
+          value={composerText}
+          onChange={(e) => setComposerText(e.target.value)}
           onKeyDown={handleKeyDown}
           disabled={isBlocked || isUploading}
           placeholder={
@@ -220,7 +226,7 @@ export function ChatInput({
         <Button
           size="icon"
           onClick={handleSend}
-          disabled={isBlocked || isUploading || !text.trim()}
+          disabled={isBlocked || isUploading || !composerText.trim()}
           className="m-1.5 h-8 w-8 shrink-0 rounded-xl transition-all active:scale-95"
         >
           <ArrowUp className="h-4 w-4" />
