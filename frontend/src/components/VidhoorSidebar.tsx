@@ -57,6 +57,7 @@ interface Props {
   onRenameSession: (id: string, newTitle: string) => void;
   onPinSession: (id: string) => void;
   connectedDocuments: ConnectedDocumentItem[];
+  legalDocsBaseUrl: string;
   tempChat: boolean;
 }
 
@@ -70,6 +71,7 @@ export function VidhoorSidebar({
   onRenameSession,
   onPinSession,
   connectedDocuments,
+  legalDocsBaseUrl,
   tempChat,
 }: Props) {
   const { theme, setTheme } = useTheme();
@@ -106,6 +108,19 @@ export function VidhoorSidebar({
   const openFeedback = () => {
     const subject = encodeURIComponent("Vidhoor feedback");
     window.open(`mailto:support@vidhoor.ai?subject=${subject}`, "_self");
+  };
+
+  const toEncodedRelativePath = (relativePath: string): string =>
+    relativePath
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+
+  const openConnectedDocument = (relativePath: string) => {
+    const encodedPath = toEncodedRelativePath(relativePath);
+    const url = `${legalDocsBaseUrl}/legal/${encodedPath}`;
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
   return (
@@ -309,17 +324,19 @@ export function VidhoorSidebar({
                 <p className="px-2 py-1 text-xs text-muted-foreground">No documents found.</p>
               ) : (
                 connectedDocuments.map((doc) => (
-                  <div
+                  <button
                     key={doc.relative_path}
-                    className="flex items-start gap-2 rounded-md px-2 py-1.5 text-xs text-foreground/90"
-                    title={doc.relative_path}
+                    type="button"
+                    onClick={() => openConnectedDocument(doc.relative_path)}
+                    className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-accent/60"
+                    title={`Open ${doc.relative_path}`}
                   >
                     <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     <div className="min-w-0">
                       <p className="truncate font-medium">{doc.file_name}</p>
                       <p className="truncate text-muted-foreground">{doc.relative_path}</p>
                     </div>
-                  </div>
+                  </button>
                 ))
               )}
             </div>

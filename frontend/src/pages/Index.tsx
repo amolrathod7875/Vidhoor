@@ -180,6 +180,23 @@ const resolveApiBaseUrl = (): string => {
 
 const API_BASE_URL = resolveApiBaseUrl();
 
+const resolveLegalDocsBaseUrl = (): string => {
+  const configured = String(import.meta.env.VITE_LEGAL_DOCS_BASE_URL || "").trim();
+  if (configured) {
+    return configured.replace(/\/$/, "");
+  }
+
+  if (API_BASE_URL) {
+    return API_BASE_URL;
+  }
+
+  const host = String(window.location.hostname || "").toLowerCase();
+  const isLocalHost = host === "localhost" || host === "127.0.0.1";
+  return isLocalHost ? "http://127.0.0.1:8001" : "http://161.118.160.239";
+};
+
+const LEGAL_DOCS_BASE_URL = resolveLegalDocsBaseUrl();
+
 let nextMessageId = 1;
 
 const createMessageId = (): string => `msg-${nextMessageId++}`;
@@ -247,7 +264,7 @@ function ChatApp() {
   useEffect(() => {
     const loadConnectedDocuments = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/connected-documents`, {
+        const response = await fetch(`${LEGAL_DOCS_BASE_URL}/api/connected-documents`, {
           method: "GET",
         });
 
@@ -1195,6 +1212,7 @@ function ChatApp() {
             void handlePinSession(id);
           }}
           connectedDocuments={connectedDocuments}
+          legalDocsBaseUrl={LEGAL_DOCS_BASE_URL}
           tempChat={tempChat}
         />
 
