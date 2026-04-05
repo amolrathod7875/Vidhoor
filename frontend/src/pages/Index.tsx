@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,6 +34,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { decryptEvidencePayload, encryptFileForUpload } from "@/lib/evidenceCrypto";
 
@@ -196,6 +204,8 @@ function ChatApp() {
   const [activeDocuments, setActiveDocuments] = useState<ActiveDocumentContext[]>([]);
   const [draftHistory, setDraftHistory] = useState<DraftRecordApiResponse[]>([]);
   const [draftFlow, setDraftFlow] = useState<DraftFlowState>({ step: "idle" });
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
   const [showDraftTile, setShowDraftTile] = useState(true);
   const [tempChat, setTempChat] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
@@ -1096,6 +1106,22 @@ function ChatApp() {
     }
   };
 
+  const openRenameDialog = () => {
+    if (!activeSession) return;
+    setRenameValue(activeSession.title);
+    setRenameDialogOpen(true);
+  };
+
+  const submitRenameDialog = () => {
+    if (!activeSession) return;
+    const nextTitle = renameValue.trim();
+    if (!nextTitle || nextTitle === activeSession.title.trim()) {
+      return;
+    }
+    void handleRenameSession(activeSession.id, nextTitle);
+    setRenameDialogOpen(false);
+  };
+
   // Filter out temp sessions from sidebar display
   const sidebarSessions = sessions.filter(
     (s) => !s.title.startsWith("⌛ ")
@@ -1208,11 +1234,7 @@ function ChatApp() {
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       onSelect={() => {
-                        if (!activeSession) return;
-                        const updatedTitle = window.prompt("Rename chat", activeSession.title);
-                        if (updatedTitle && updatedTitle.trim()) {
-                          void handleRenameSession(activeSession.id, updatedTitle.trim());
-                        }
+                        openRenameDialog();
                       }}
                       className="gap-2"
                     >
@@ -1428,6 +1450,61 @@ function ChatApp() {
       </div>
 
       <LoginModal open={loginOpen} onOpenChange={setLoginOpen} />
+
+      <Dialog
+        open={renameDialogOpen}
+        onOpenChange={(open) => {
+          setRenameDialogOpen(open);
+          if (!open) {
+            setRenameValue("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-3xl font-semibold">Rename this chat</DialogTitle>
+          </DialogHeader>
+
+          <form
+            className="space-y-6"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitRenameDialog();
+            }}
+          >
+            <Input
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              placeholder="Enter chat title"
+              autoFocus
+              maxLength={120}
+              className="h-14 rounded-lg text-3xl tracking-tight"
+            />
+
+            <DialogFooter className="gap-2 sm:justify-start sm:space-x-0">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setRenameDialogOpen(false)}
+                className="text-lg"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                className="text-lg"
+                disabled={
+                  !activeSession ||
+                  !renameValue.trim() ||
+                  renameValue.trim() === activeSession.title.trim()
+                }
+              >
+                Rename
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </SidebarProvider>
   );
 }
