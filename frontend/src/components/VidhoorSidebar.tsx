@@ -144,8 +144,8 @@ export function VidhoorSidebar({
 
   const submitFeedback = async () => {
     const message = feedbackMessage.trim();
-    if (message.length < 5) {
-      setFeedbackError("Please describe your feedback in at least 5 characters.");
+    if (message.length < 1) {
+      setFeedbackError("Please describe your feedback before sending.");
       return;
     }
 
@@ -513,7 +513,7 @@ export function VidhoorSidebar({
                 onClick={() => {
                   void submitFeedback();
                 }}
-                disabled={feedbackSubmitting || feedbackMessage.trim().length < 5}
+                disabled={feedbackSubmitting || feedbackMessage.trim().length < 1}
               >
                 {feedbackSubmitting ? "Sending..." : "Send"}
               </Button>

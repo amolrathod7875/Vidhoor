@@ -231,7 +231,7 @@ class DraftRecord(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    message: str = Field(min_length=5, max_length=5000)
+    message: str = Field(min_length=1, max_length=5000)
     allow_follow_up: bool = False
     page_url: str | None = None
     user_agent: str | None = None
