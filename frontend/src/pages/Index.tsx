@@ -101,6 +101,13 @@ interface EvidencePayloadResponse {
   created_at: string;
 }
 
+interface ConnectedDocumentResponse {
+  file_name: string;
+  relative_path: string;
+  size_bytes: number;
+  updated_at: string;
+}
+
 const MAX_ACTIVE_DOCUMENTS = 5;
 
 interface HistorySessionResponse {
@@ -207,6 +214,7 @@ function ChatApp() {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [composerText, setComposerText] = useState("");
+  const [connectedDocuments, setConnectedDocuments] = useState<ConnectedDocumentResponse[]>([]);
   const [showDraftTile, setShowDraftTile] = useState(true);
   const [tempChat, setTempChat] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
@@ -235,6 +243,28 @@ function ChatApp() {
   useEffect(() => {
     setShowDraftTile(true);
   }, [activeId, tempChat, user?.uid]);
+
+  useEffect(() => {
+    const loadConnectedDocuments = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/connected-documents`, {
+          method: "GET",
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed to load connected documents (${response.status})`);
+        }
+
+        const data = (await response.json()) as ConnectedDocumentResponse[];
+        setConnectedDocuments(data);
+      } catch (error) {
+        console.error(error);
+        setConnectedDocuments([]);
+      }
+    };
+
+    void loadConnectedDocuments();
+  }, []);
 
   useEffect(() => {
     const loadHistorySessions = async () => {
@@ -1154,7 +1184,6 @@ function ChatApp() {
             void handleSelectSession(id);
           }}
           onNewChat={handleNewChat}
-          onLoginClick={() => setLoginOpen(true)}
           onDeleteSession={(id) => {
             void handleDeleteSession(id);
           }}
@@ -1165,6 +1194,7 @@ function ChatApp() {
           onPinSession={(id) => {
             void handlePinSession(id);
           }}
+          connectedDocuments={connectedDocuments}
           tempChat={tempChat}
         />
 

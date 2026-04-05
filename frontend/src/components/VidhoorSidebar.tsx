@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, KeyboardEvent } from "react";
 import {
   Plus,
-  Sun,
-  Moon,
-  LogIn,
+  Settings,
+  User,
+  Palette,
+  FileText,
+  MessageSquareMore,
+  MapPin,
   MessageSquare,
-  LogOut,
   Ghost,
   MoreVertical,
   Trash2,
@@ -31,20 +33,30 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+
+interface ConnectedDocumentItem {
+  file_name: string;
+  relative_path: string;
+  size_bytes: number;
+  updated_at: string;
+}
 
 interface Props {
   sessions: ChatSession[];
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
   onNewChat: () => void;
-  onLoginClick: () => void;
   onDeleteSession: (id: string) => void;
   onShareSession: (id: string) => void;
   onRenameSession: (id: string, newTitle: string) => void;
   onPinSession: (id: string) => void;
+  connectedDocuments: ConnectedDocumentItem[];
   tempChat: boolean;
 }
 
@@ -53,15 +65,15 @@ export function VidhoorSidebar({
   activeSessionId,
   onSelectSession,
   onNewChat,
-  onLoginClick,
   onDeleteSession,
   onShareSession,
   onRenameSession,
   onPinSession,
+  connectedDocuments,
   tempChat,
 }: Props) {
-  const { theme, toggle } = useTheme();
-  const { user, logout } = useAuth();
+  const { theme, setTheme } = useTheme();
+  const { user } = useAuth();
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -89,14 +101,12 @@ export function VidhoorSidebar({
     if (e.key === "Escape") setEditingId(null);
   };
 
-  const initials = user?.displayName
-    ? user.displayName
-        .split(" ")
-        .map((n) => n[0])
-        .join("")
-        .toUpperCase()
-        .slice(0, 2)
-    : user?.email?.[0]?.toUpperCase() ?? "U";
+  const userLabel = user?.displayName || user?.email || "Guest";
+
+  const openFeedback = () => {
+    const subject = encodeURIComponent("Vidhoor feedback");
+    window.open(`mailto:support@vidhoor.ai?subject=${subject}`, "_self");
+  };
 
   return (
     <Sidebar collapsible="icon" className="border-r-0">
@@ -242,86 +252,94 @@ export function VidhoorSidebar({
         )}
       </SidebarContent>
 
-      <SidebarFooter className="space-y-1 p-3">
-        {/* Theme toggle */}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={toggle}
-          className={cn(
-            "w-full justify-start gap-2.5 rounded-xl transition-colors active:scale-[0.97]",
-            collapsed && "justify-center px-0"
-          )}
-        >
-          {theme === "light" ? (
-            <Moon className="h-4 w-4 shrink-0" />
-          ) : (
-            <Sun className="h-4 w-4 shrink-0" />
-          )}
-          {!collapsed && (
-            <span className="text-sm">
-              {theme === "light" ? "Dark mode" : "Light mode"}
-            </span>
-          )}
-        </Button>
+      <SidebarFooter className="mt-auto p-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground",
+                collapsed ? "mx-auto" : "ml-1"
+              )}
+              title="Settings"
+              aria-label="Open settings"
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="top" className="w-80 rounded-2xl p-2">
+            <DropdownMenuLabel className="text-xs uppercase tracking-wide text-muted-foreground">
+              Account
+            </DropdownMenuLabel>
+            <div className="mb-1 flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm">
+              <User className="h-4 w-4 text-muted-foreground" />
+              <span className="truncate">{userLabel}</span>
+            </div>
 
-        {/* Auth section */}
-        {user ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className={cn(
-                  "w-full justify-start gap-2.5 rounded-xl transition-colors active:scale-[0.97]",
-                  collapsed && "justify-center px-0"
-                )}
-              >
-                <Avatar className="h-6 w-6">
-                  <AvatarImage src={user.photoURL ?? undefined} />
-                  <AvatarFallback className="text-[10px] bg-primary/15 text-primary">
-                    {initials}
-                  </AvatarFallback>
-                </Avatar>
-                {!collapsed && (
-                  <span className="truncate text-sm">
-                    {user.displayName || user.email}
-                  </span>
-                )}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56 rounded-xl">
-              <div className="px-3 py-2">
-                <p className="text-sm font-medium truncate">
-                  {user.displayName || "User"}
-                </p>
-                <p className="text-xs text-muted-foreground truncate">
-                  {user.email}
-                </p>
+            <DropdownMenuSeparator />
+
+            <DropdownMenuLabel className="text-xs uppercase tracking-wide text-muted-foreground">
+              Appearance
+            </DropdownMenuLabel>
+            <div className="rounded-lg px-1 pb-1">
+              <DropdownMenuRadioGroup value={theme} onValueChange={(value) => setTheme(value as "light" | "dark" | "system")}>
+                <DropdownMenuRadioItem value="light" className="gap-2 rounded-md">
+                  <Palette className="h-3.5 w-3.5" />
+                  Light
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="dark" className="gap-2 rounded-md">
+                  <Palette className="h-3.5 w-3.5" />
+                  Dark
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="system" className="gap-2 rounded-md">
+                  <Palette className="h-3.5 w-3.5" />
+                  System
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </div>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuLabel className="text-xs uppercase tracking-wide text-muted-foreground">
+              Connected Documents
+            </DropdownMenuLabel>
+            <div className="max-h-44 overflow-y-auto rounded-lg border border-border/50 bg-muted/20 p-1.5">
+              {connectedDocuments.length === 0 ? (
+                <p className="px-2 py-1 text-xs text-muted-foreground">No documents found.</p>
+              ) : (
+                connectedDocuments.map((doc) => (
+                  <div
+                    key={doc.relative_path}
+                    className="flex items-start gap-2 rounded-md px-2 py-1.5 text-xs text-foreground/90"
+                    title={doc.relative_path}
+                  >
+                    <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{doc.file_name}</p>
+                      <p className="truncate text-muted-foreground">{doc.relative_path}</p>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuItem onSelect={openFeedback} className="gap-2 rounded-lg text-sm">
+              <MessageSquareMore className="h-4 w-4" />
+              Send feedback
+            </DropdownMenuItem>
+
+            <div className="mt-1 rounded-lg border border-border/50 px-2 py-2 text-xs text-muted-foreground">
+              <div className="mb-1 flex items-center gap-1.5 text-foreground/80">
+                <MapPin className="h-3.5 w-3.5" />
+                Location
               </div>
-              <DropdownMenuItem
-                onClick={logout}
-                className="gap-2 rounded-lg text-destructive focus:text-destructive"
-              >
-                <LogOut className="h-4 w-4" />
-                Sign Out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onLoginClick}
-            className={cn(
-              "w-full justify-start gap-2.5 rounded-xl transition-colors active:scale-[0.97]",
-              collapsed && "justify-center px-0"
-            )}
-          >
-            <LogIn className="h-4 w-4 shrink-0" />
-            {!collapsed && <span className="text-sm">Login / Sign Up</span>}
-          </Button>
-        )}
+              <p>Update location from browser or device settings.</p>
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </SidebarFooter>
     </Sidebar>
   );

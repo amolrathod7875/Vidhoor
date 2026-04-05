@@ -60,7 +60,7 @@ export function ChatArea({
   const bottomRef = useRef<HTMLDivElement>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [activeSourcesMessageId, setActiveSourcesMessageId] = useState<string | null>(null);
-  const { theme } = useTheme();
+  const { resolvedTheme } = useTheme();
 
   const activeSourcesMessage =
     messages.find((item) => item.id === activeSourcesMessageId) ?? null;
@@ -114,7 +114,7 @@ export function ChatArea({
     <div className="flex flex-1 flex-col overflow-y-auto px-4 py-6">
       {isHistoryLoading && (
         <div className="w-full animate-fade-in-up pb-4">
-          {theme === "dark" ? (
+          {resolvedTheme === "dark" ? (
             <HorizontalLoadingBarDark />
           ) : (
             <HorizontalLoadingBarLight />

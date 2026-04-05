@@ -158,6 +158,13 @@ class EvidencePayloadResponse(BaseModel):
     created_at: str
 
 
+class ConnectedDocument(BaseModel):
+    file_name: str
+    relative_path: str
+    size_bytes: int
+    updated_at: str
+
+
 class SessionSummary(BaseModel):
     session_id: str
     title: str
@@ -1843,6 +1850,38 @@ async def get_user_evidence(evidence_id: str, user: dict = Depends(verify_token)
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch evidence payload: {exc}")
+
+
+@app.get("/api/connected-documents", response_model=list[ConnectedDocument])
+async def list_connected_documents():
+    """List legal source documents under backend/data, excluding the Case subtree."""
+    try:
+        if not _LEGAL_DOCS_DIR.exists() or not _LEGAL_DOCS_DIR.is_dir():
+            return []
+
+        documents: list[ConnectedDocument] = []
+        for path in _LEGAL_DOCS_DIR.rglob("*"):
+            if not path.is_file():
+                continue
+
+            relative = path.relative_to(_LEGAL_DOCS_DIR)
+            if relative.parts and relative.parts[0].lower() == "case":
+                continue
+
+            stat = path.stat()
+            documents.append(
+                ConnectedDocument(
+                    file_name=path.name,
+                    relative_path=relative.as_posix(),
+                    size_bytes=int(stat.st_size),
+                    updated_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                )
+            )
+
+        documents.sort(key=lambda item: item.relative_path.lower())
+        return documents
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list connected documents: {exc}")
 
 
 @app.get("/api/history/sessions", response_model=list[SessionSummary])
