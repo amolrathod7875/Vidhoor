@@ -138,6 +138,34 @@ class OracleChatHistoryRepository:
 			CREATE INDEX idx_vidhoor_user_drafts_user
 			ON vidhoor_user_drafts(user_id, created_at)
 			""",
+			"""
+			CREATE TABLE vidhoor_user_feedback (
+				feedback_id VARCHAR2(128) PRIMARY KEY,
+				user_id VARCHAR2(256),
+				user_email VARCHAR2(320),
+				message CLOB NOT NULL,
+				allow_follow_up NUMBER(1) DEFAULT 0 NOT NULL,
+				page_url VARCHAR2(1000),
+				user_agent VARCHAR2(2000),
+				app_version VARCHAR2(64),
+				context VARCHAR2(256),
+				status VARCHAR2(32) DEFAULT 'new' NOT NULL,
+				created_at TIMESTAMP DEFAULT SYSTIMESTAMP,
+				updated_at TIMESTAMP DEFAULT SYSTIMESTAMP
+			)
+			""",
+			"""
+			CREATE INDEX idx_vidhoor_user_feedback_created
+			ON vidhoor_user_feedback(created_at)
+			""",
+			"""
+			CREATE INDEX idx_vidhoor_user_feedback_status
+			ON vidhoor_user_feedback(status, created_at)
+			""",
+			"""
+			CREATE INDEX idx_vidhoor_user_feedback_user
+			ON vidhoor_user_feedback(user_id, created_at)
+			""",
 		]
 
 		with self._connect() as connection:
@@ -604,6 +632,65 @@ class OracleChatHistoryRepository:
 						"title": title,
 						"draft_content": draft_content,
 						"draft_meta_json": draft_meta_json,
+					},
+				)
+			connection.commit()
+
+	def save_user_feedback(
+		self,
+		feedback_id: str,
+		message: str,
+		allow_follow_up: bool,
+		page_url: str | None,
+		user_agent: str | None,
+		app_version: str | None,
+		context: str | None,
+		user_id: str | None = None,
+		user_email: str | None = None,
+	) -> None:
+		"""Persist one feedback submission record for analytics and follow-up."""
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					"""
+					INSERT INTO vidhoor_user_feedback (
+						feedback_id,
+						user_id,
+						user_email,
+						message,
+						allow_follow_up,
+						page_url,
+						user_agent,
+						app_version,
+						context,
+						status,
+						created_at,
+						updated_at
+					) VALUES (
+						:feedback_id,
+						:user_id,
+						:user_email,
+						:message,
+						:allow_follow_up,
+						:page_url,
+						:user_agent,
+						:app_version,
+						:context,
+						'new',
+						SYSTIMESTAMP,
+						SYSTIMESTAMP
+					)
+					""",
+					{
+						"feedback_id": feedback_id,
+						"user_id": user_id,
+						"user_email": user_email,
+						"message": message,
+						"allow_follow_up": 1 if allow_follow_up else 0,
+						"page_url": (page_url or "")[:1000],
+						"user_agent": (user_agent or "")[:2000],
+						"app_version": (app_version or "")[:64],
+						"context": (context or "")[:256],
 					},
 				)
 			connection.commit()

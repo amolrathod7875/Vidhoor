@@ -472,13 +472,6 @@ def _extract_recent_session_context(user_id: str, session_id: str | None, limit:
     return "\n\n".join(lines)
 
 
-def _get_feedback_log_path() -> Path:
-    """Return the JSONL path used to persist user feedback records."""
-    feedback_dir = _BASE_DIR / "feedback"
-    feedback_dir.mkdir(parents=True, exist_ok=True)
-    return feedback_dir / "feedback.jsonl"
-
-
 def get_chroma_manager() -> ChromaManager:
     """Get or create singleton Chroma manager instance."""
     global _chroma_manager
@@ -1171,32 +1164,26 @@ async def submit_feedback(
     request: Request,
     user: dict | None = Depends(verify_token),
 ):
-    """Accept feedback submissions from UI and persist them as JSONL records."""
+    """Accept feedback submissions from UI and persist them in Oracle DB."""
     feedback_id = str(uuid4())
-    submitted_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     user_id = str((user or {}).get("uid") or "").strip() or None
     user_email = str((user or {}).get("email") or "").strip() or None
     clean_message = "\n".join(line.rstrip() for line in feedback.message.strip().splitlines())
 
-    record = {
-        "feedback_id": feedback_id,
-        "submitted_at": submitted_at,
-        "message": clean_message,
-        "allow_follow_up": bool(feedback.allow_follow_up),
-        "page_url": str(feedback.page_url or request.url.path),
-        "user_agent": str(feedback.user_agent or request.headers.get("user-agent") or ""),
-        "app_version": str(feedback.app_version or ""),
-        "context": str(feedback.context or ""),
-        "user_id": user_id,
-        "user_email": user_email,
-    }
-
     try:
-        log_path = _get_feedback_log_path()
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        get_chat_repo().save_user_feedback(
+            feedback_id=feedback_id,
+            message=clean_message,
+            allow_follow_up=bool(feedback.allow_follow_up),
+            page_url=str(feedback.page_url or request.url.path),
+            user_agent=str(feedback.user_agent or request.headers.get("user-agent") or ""),
+            app_version=str(feedback.app_version or ""),
+            context=str(feedback.context or ""),
+            user_id=user_id,
+            user_email=user_email,
+        )
     except Exception as exc:
-        logger.exception("Failed to store feedback")
+        logger.exception("Failed to store feedback in Oracle")
         raise HTTPException(status_code=500, detail=f"Failed to submit feedback: {exc}") from exc
 
     logger.info("Feedback submitted: id=%s, user_id=%s", feedback_id, user_id or "guest")
