@@ -175,7 +175,12 @@ const resolveApiBaseUrl = (): string => {
 
   const host = String(window.location.hostname || "").toLowerCase();
   const isLocalHost = host === "localhost" || host === "127.0.0.1";
-  return isLocalHost ? "http://127.0.0.1:8001" : "";
+  if (isLocalHost) {
+    return "http://127.0.0.1:8001";
+  }
+
+  // On deployed frontend (for example Vercel), rely on same-origin /api rewrites.
+  return String(window.location.origin || "").replace(/\/$/, "");
 };
 
 const API_BASE_URL = resolveApiBaseUrl();
@@ -192,7 +197,11 @@ const resolveLegalDocsBaseUrl = (): string => {
 
   const host = String(window.location.hostname || "").toLowerCase();
   const isLocalHost = host === "localhost" || host === "127.0.0.1";
-  return isLocalHost ? "http://127.0.0.1:8001" : "";
+  if (isLocalHost) {
+    return "http://127.0.0.1:8001";
+  }
+
+  return String(window.location.origin || "").replace(/\/$/, "");
 };
 
 const LEGAL_DOCS_BASE_URL = resolveLegalDocsBaseUrl();
