@@ -16,6 +16,7 @@ import {
   Pin,
   PinOff,
   CheckCircle2,
+  LocateFixed,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -72,6 +73,8 @@ interface Props {
   tempChat: boolean;
 }
 
+const LOCATION_STORAGE_KEY = "vidhoor:location-label";
+
 export function VidhoorSidebar({
   sessions,
   activeSessionId,
@@ -98,11 +101,21 @@ export function VidhoorSidebar({
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [feedbackError, setFeedbackError] = useState("");
+  const [locationLabel, setLocationLabel] = useState("Location not shared yet.");
+  const [locationError, setLocationError] = useState("");
+  const [isLocating, setIsLocating] = useState(false);
   const editRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (editingId) editRef.current?.focus();
   }, [editingId]);
+
+  useEffect(() => {
+    const persistedLocation = window.localStorage.getItem(LOCATION_STORAGE_KEY);
+    if (persistedLocation) {
+      setLocationLabel(persistedLocation);
+    }
+  }, []);
 
   const startRename = (id: string, currentTitle: string) => {
     setEditingId(id);
@@ -191,6 +204,91 @@ export function VidhoorSidebar({
     } finally {
       setFeedbackSubmitting(false);
     }
+  };
+
+  const resolvePlaceLabel = async (latitude: number, longitude: number): Promise<string | null> => {
+    try {
+      const url =
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2` +
+        `&lat=${encodeURIComponent(String(latitude))}` +
+        `&lon=${encodeURIComponent(String(longitude))}` +
+        `&zoom=10&addressdetails=1`;
+
+      const response = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = (await response.json()) as {
+        address?: {
+          city?: string;
+          town?: string;
+          village?: string;
+          county?: string;
+          state?: string;
+          country?: string;
+        };
+      };
+
+      const address = data.address || {};
+      const locality = address.city || address.town || address.village || address.county || "";
+      const state = address.state || "";
+      const country = address.country || "";
+      const parts = [locality, state, country].filter(Boolean);
+
+      return parts.length ? parts.join(", ") : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const requestLocation = () => {
+    if (!navigator.geolocation) {
+      setLocationError("Geolocation is not supported by this browser.");
+      return;
+    }
+
+    setIsLocating(true);
+    setLocationError("");
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        void (async () => {
+          const lat = position.coords.latitude;
+          const lon = position.coords.longitude;
+          const accuracy = Math.round(position.coords.accuracy);
+          const placeName = await resolvePlaceLabel(lat, lon);
+          const fallbackCoords = `${lat.toFixed(4)}, ${lon.toFixed(4)} (±${accuracy}m)`;
+          const label = placeName ? `${placeName} (±${accuracy}m)` : fallbackCoords;
+
+          setLocationLabel(label);
+          window.localStorage.setItem(LOCATION_STORAGE_KEY, label);
+          setIsLocating(false);
+        })();
+      },
+      (error) => {
+        let message = "Could not fetch location.";
+        if (error.code === error.PERMISSION_DENIED) {
+          message = "Location permission denied. Allow it in browser settings.";
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          message = "Location information is unavailable right now.";
+        } else if (error.code === error.TIMEOUT) {
+          message = "Location request timed out. Please try again.";
+        }
+        setLocationError(message);
+        setIsLocating(false);
+      },
+      {
+        enableHighAccuracy: false,
+        timeout: 10000,
+        maximumAge: 60000,
+      },
+    );
   };
 
   const toEncodedRelativePath = (relativePath: string): string =>
@@ -439,11 +537,25 @@ export function VidhoorSidebar({
             </DropdownMenuItem>
 
             <div className="mt-1 rounded-lg border border-border/50 px-2 py-2 text-xs text-muted-foreground">
-              <div className="mb-1 flex items-center gap-1.5 text-foreground/80">
+              <div className="mb-1 flex items-center justify-between gap-2 text-foreground/80">
+                <div className="flex items-center gap-1.5">
                 <MapPin className="h-3.5 w-3.5" />
                 Location
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={requestLocation}
+                  disabled={isLocating}
+                  className="h-7 rounded-md px-2 text-[11px]"
+                >
+                  <LocateFixed className="mr-1 h-3.5 w-3.5" />
+                  {isLocating ? "Fetching..." : "Use current"}
+                </Button>
               </div>
-              <p>Update location from browser or device settings.</p>
+              <p className="break-words">{locationLabel}</p>
+              {locationError ? <p className="mt-1 text-destructive">{locationError}</p> : null}
             </div>
           </DropdownMenuContent>
         </DropdownMenu>
