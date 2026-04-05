@@ -192,7 +192,7 @@ const resolveLegalDocsBaseUrl = (): string => {
 
   const host = String(window.location.hostname || "").toLowerCase();
   const isLocalHost = host === "localhost" || host === "127.0.0.1";
-  return isLocalHost ? "http://127.0.0.1:8001" : "http://161.118.160.239";
+  return isLocalHost ? "http://127.0.0.1:8001" : "";
 };
 
 const LEGAL_DOCS_BASE_URL = resolveLegalDocsBaseUrl();
