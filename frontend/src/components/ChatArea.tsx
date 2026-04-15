@@ -188,27 +188,50 @@ export function ChatArea({
                 </div>
               )}
               {msg.role === "assistant" && (
-                <div className="mt-2 flex justify-end gap-2">
-                  {msg.citations && msg.citations.length > 0 && (
+                <>
+                  <div className="mt-2 flex justify-end gap-2">
+                    {msg.citations && msg.citations.length > 0 && (
+                      <button
+                        onClick={() => setActiveSourcesMessageId(msg.id)}
+                        className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        Sources
+                      </button>
+                    )}
                     <button
-                      onClick={() => setActiveSourcesMessageId(msg.id)}
+                      onClick={() => handleCopy(msg.id, msg.content)}
                       className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                     >
-                      Sources
+                      {copiedId === msg.id ? (
+                        <Check className="h-3.5 w-3.5" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                      {copiedId === msg.id ? "Copied" : "Copy"}
                     </button>
+                  </div>
+
+                  {msg.follow_ups && msg.follow_ups.length > 0 && (
+                    <div className="mt-3 space-y-2 rounded-lg border border-border/50 bg-card/50 p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Follow-ups
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {msg.follow_ups.map((followUp, followUpIndex) => (
+                          <button
+                            key={`${msg.id}-follow-up-${followUpIndex}`}
+                            type="button"
+                            onClick={() => onChipClick?.(followUp)}
+                            disabled={!onChipClick}
+                            className="rounded-full border border-border/60 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {followUp}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   )}
-                  <button
-                    onClick={() => handleCopy(msg.id, msg.content)}
-                    className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  >
-                    {copiedId === msg.id ? (
-                      <Check className="h-3.5 w-3.5" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5" />
-                    )}
-                    {copiedId === msg.id ? "Copied" : "Copy"}
-                  </button>
-                </div>
+                </>
               )}
             </div>
           </div>

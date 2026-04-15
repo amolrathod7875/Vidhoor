@@ -85,6 +85,7 @@ class OracleChatHistoryRepository:
 				content CLOB NOT NULL,
 				masked_entities CLOB,
 				citations_json CLOB,
+				follow_ups_json CLOB,
 				overall_confidence NUMBER,
 				created_at TIMESTAMP DEFAULT SYSTIMESTAMP,
 				CONSTRAINT fk_vidhoor_chat_session
@@ -216,6 +217,16 @@ class OracleChatHistoryRepository:
 					# ORA-01430: column being added already exists
 					if getattr(error_obj, "code", None) != 1430:
 						raise
+
+				try:
+					cursor.execute(
+						"ALTER TABLE vidhoor_chat_messages ADD (follow_ups_json CLOB)"
+					)
+				except oracledb.DatabaseError as exc:
+					error_obj = exc.args[0]
+					# ORA-01430: column being added already exists
+					if getattr(error_obj, "code", None) != 1430:
+						raise
 			connection.commit()
 
 	def save_chat_turn(
@@ -226,6 +237,7 @@ class OracleChatHistoryRepository:
 		assistant_message: str,
 		masked_entities: dict[str, str],
 		assistant_citations: list[dict[str, Any]] | None = None,
+		assistant_follow_ups: list[str] | None = None,
 		assistant_overall_confidence: float | None = None,
 		session_title: str | None = None,
 	) -> None:
@@ -237,6 +249,9 @@ class OracleChatHistoryRepository:
 		assistant_citations_json = None
 		if assistant_citations:
 			assistant_citations_json = json.dumps(assistant_citations, ensure_ascii=False)
+		assistant_follow_ups_json = None
+		if assistant_follow_ups:
+			assistant_follow_ups_json = json.dumps(assistant_follow_ups, ensure_ascii=False)
 
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
@@ -272,6 +287,7 @@ class OracleChatHistoryRepository:
 						content,
 						masked_entities,
 						citations_json,
+						follow_ups_json,
 						overall_confidence,
 						created_at
 					) VALUES (
@@ -280,6 +296,7 @@ class OracleChatHistoryRepository:
 						'user',
 						:content,
 						:masked_entities,
+						NULL,
 						NULL,
 						NULL,
 						SYSTIMESTAMP
@@ -302,6 +319,7 @@ class OracleChatHistoryRepository:
 						content,
 						masked_entities,
 						citations_json,
+						follow_ups_json,
 						overall_confidence,
 						created_at
 					) VALUES (
@@ -311,6 +329,7 @@ class OracleChatHistoryRepository:
 						:content,
 						:masked_entities,
 						:citations_json,
+						:follow_ups_json,
 						:overall_confidence,
 						SYSTIMESTAMP
 					)
@@ -321,6 +340,7 @@ class OracleChatHistoryRepository:
 						"content": assistant_message,
 						"masked_entities": masked_entities_json,
 						"citations_json": assistant_citations_json,
+						"follow_ups_json": assistant_follow_ups_json,
 						"overall_confidence": assistant_overall_confidence,
 					},
 				)
@@ -443,7 +463,7 @@ class OracleChatHistoryRepository:
 
 				cursor.execute(
 					"""
-					SELECT role, content, created_at, masked_entities, citations_json, overall_confidence
+					SELECT role, content, created_at, masked_entities, citations_json, follow_ups_json, overall_confidence
 					FROM vidhoor_chat_messages
 					WHERE session_id = :session_id AND user_id = :user_id
 					ORDER BY created_at ASC, message_id ASC
@@ -453,11 +473,22 @@ class OracleChatHistoryRepository:
 				rows = cursor.fetchall()
 
 				messages: list[dict[str, Any]] = []
-				for role, content, created_at, masked_entities, citations_json, overall_confidence in rows:
+				last_user_message = ""
+				for role, content, created_at, masked_entities, citations_json, follow_ups_json, overall_confidence in rows:
 					content_text = content.read() if hasattr(content, "read") else str(content)
 					decoded_citations = _decode_json_list(citations_json)
 					if role == "assistant" and not decoded_citations:
 						decoded_citations = _extract_markdown_link_citations(content_text)
+					decoded_follow_ups = _decode_json_string_list(follow_ups_json)
+					if role == "assistant" and not decoded_follow_ups:
+						decoded_follow_ups = _derive_follow_ups_from_history(
+							user_message=last_user_message,
+							assistant_content=content_text,
+							citations=decoded_citations,
+						)
+
+					if role == "user":
+						last_user_message = content_text
 
 					messages.append(
 						{
@@ -466,6 +497,7 @@ class OracleChatHistoryRepository:
 							"created_at": _iso(created_at),
 							"masked_entities": _decode_json(masked_entities),
 							"citations": decoded_citations,
+							"follow_ups": decoded_follow_ups,
 							"overall_confidence": float(overall_confidence) if overall_confidence is not None else None,
 						}
 					)
@@ -920,6 +952,27 @@ def _decode_json_list(value: Any) -> list[dict[str, Any]]:
 		return []
 
 
+def _decode_json_string_list(value: Any) -> list[str]:
+	"""Safely decode JSON CLOB/string values as a list of non-empty strings."""
+	if value is None:
+		return []
+
+	text_value = value.read() if hasattr(value, "read") else str(value)
+	try:
+		parsed = json.loads(text_value)
+		if not isinstance(parsed, list):
+			return []
+
+		results: list[str] = []
+		for item in parsed:
+			candidate = str(item or "").strip()
+			if candidate:
+				results.append(candidate)
+		return results[:5]
+	except Exception:
+		return []
+
+
 def _extract_markdown_link_citations(content: str) -> list[dict[str, Any]]:
 	"""Backfill citation-like resources from markdown links in legacy assistant messages."""
 	text = str(content or "")
@@ -952,6 +1005,42 @@ def _extract_markdown_link_citations(content: str) -> list[dict[str, Any]]:
 		)
 
 	return results
+
+
+def _derive_follow_ups_from_history(
+	user_message: str,
+	assistant_content: str,
+	citations: list[dict[str, Any]],
+) -> list[str]:
+	"""Build fallback follow-up questions for legacy assistant messages."""
+	seed = " ".join(str(user_message or "").split())
+	if not seed:
+		seed = "this legal issue"
+
+	results: list[str] = [
+		f"What are the key legal ingredients for {seed}?"[:120],
+		"What documents or evidence should I collect next?",
+		"Can you explain the main risks and possible outcomes?",
+	]
+
+	if citations:
+		first_title = str(citations[0].get("title") or "this source").strip()
+		if first_title:
+			results.insert(1, f"Can you summarize the ruling in {first_title}?"[:120])
+
+	seen: set[str] = set()
+	cleaned: list[str] = []
+	for item in results:
+		normalized = " ".join(item.split())
+		if not normalized:
+			continue
+		key = normalized.lower()
+		if key in seen:
+			continue
+		seen.add(key)
+		cleaned.append(normalized)
+
+	return cleaned[:5]
 
 
 def _iso(value: Any) -> str:

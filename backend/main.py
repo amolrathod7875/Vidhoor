@@ -115,6 +115,7 @@ class ChatResponse(BaseModel):
     masked_entities: dict # We will send back the PII map just in case the frontend needs it
     citations: list[Citation] = []
     overall_confidence: Optional[float] = None
+    follow_ups: list[str] = []
 
 
 class OCRPageResult(BaseModel):
@@ -180,6 +181,7 @@ class SessionMessage(BaseModel):
     masked_entities: dict[str, str]
     citations: list[Citation] = []
     overall_confidence: Optional[float] = None
+    follow_ups: list[str] = []
 
 
 class UpdateSessionRequest(BaseModel):
@@ -1003,6 +1005,39 @@ def _build_related_case_links_markdown(case_links: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _fallback_follow_ups(query: str, citations: list[Citation]) -> list[str]:
+    """Build deterministic follow-up suggestions when LLM follow-up generation fails."""
+    seed = " ".join(str(query or "").split())
+    if not seed:
+        seed = "this legal issue"
+
+    suggestions = [
+        f"What are the key legal ingredients for {seed}?"[:120],
+        "What evidence and documents should I gather next?",
+        "What are the possible outcomes and legal risks?",
+    ]
+
+    if citations:
+        title = " ".join(str(citations[0].title or "").split())
+        if title:
+            suggestions.insert(1, f"Can you summarize the key points from {title}?"[:120])
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in suggestions:
+        text = " ".join(str(item or "").split())
+        if not text:
+            continue
+        if not text.endswith("?"):
+            text = f"{text}?"
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized[:5]
+
+
 def _retrieve_legal_citations(masked_query: str, request: Request | None = None) -> tuple[list[Citation], Optional[float]]:
     """Retrieve citation objects and overall confidence for a query."""
     chroma_manager = get_chroma_manager()
@@ -1394,6 +1429,19 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                         final_readable_response = f"{final_readable_response}\n\n{links_section}"
             except Exception as exc:
                 logger.warning("Failed to fetch Indian Kanoon related links: %s", exc)
+
+        follow_ups: list[str] = []
+        try:
+            follow_ups = llm_engine.generate_follow_up_questions(
+                user_query=chat_request.message,
+                assistant_answer=final_readable_response,
+                max_count=5,
+            )
+        except Exception as exc:
+            logger.warning("Failed to generate follow-up suggestions: %s", exc)
+
+        if not follow_ups:
+            follow_ups = _fallback_follow_ups(chat_request.message, citations)
         
         # Step 5: Save to Oracle DB (if NOT temporary and authenticated)
         if not chat_request.is_temporary_chat and user and user.get("uid"):
@@ -1419,6 +1467,7 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                     assistant_message=final_readable_response,
                     masked_entities=pii_map,
                     assistant_citations=[item.model_dump() for item in citations],
+                    assistant_follow_ups=follow_ups,
                     assistant_overall_confidence=overall_confidence,
                     session_title=session_title,
                 )
@@ -1431,6 +1480,7 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
             masked_entities=pii_map,
             citations=citations,
             overall_confidence=overall_confidence,
+            follow_ups=follow_ups,
         )
         
     except Exception as e:

@@ -159,6 +159,30 @@ class LLMEngine:
 
 		self.title_chain = self.title_prompt | self.llm | StrOutputParser()
 
+		self.follow_up_prompt = ChatPromptTemplate.from_messages(
+			[
+				(
+					"system",
+					(
+						"You generate suggested follow-up questions for a chat assistant. "
+						"Return only short questions relevant to the user's most recent query and the assistant answer. "
+						"Do not include numbering, bullets, explanations, markdown, or duplicate questions."
+					),
+				),
+				(
+					"human",
+					(
+						"User query:\n{query}\n\n"
+						"Assistant answer:\n{answer}\n\n"
+						"Generate {max_count} follow-up questions. "
+						"Each question must be one line, under 14 words, and actionable."
+					),
+				),
+			]
+		)
+
+		self.follow_up_chain = self.follow_up_prompt | self.llm | StrOutputParser()
+
 	@staticmethod
 	def _build_model_candidates(primary_model: str) -> list[str]:
 		"""Build a unique list of model aliases to try in order."""
@@ -185,6 +209,7 @@ class LLMEngine:
 		self.chain = self.prompt | self.llm | StrOutputParser()
 		self.general_chain = self.general_prompt | self.llm | StrOutputParser()
 		self.title_chain = self.title_prompt | self.llm | StrOutputParser()
+		self.follow_up_chain = self.follow_up_prompt | self.llm | StrOutputParser()
 		self._active_model = model_name
 
 	@staticmethod
@@ -375,3 +400,77 @@ class LLMEngine:
 		if last_error:
 			logger.info("Using fallback title because model invocation failed: %s", last_error)
 		return seed_title
+
+	def generate_follow_up_questions(
+		self,
+		user_query: str,
+		assistant_answer: str,
+		max_count: int = 5,
+	) -> list[str]:
+		"""Generate contextual follow-up questions for the latest chat turn."""
+		query = str(user_query or "").strip()
+		answer = str(assistant_answer or "").strip()
+		if not query or not answer:
+			return []
+
+		target_count = max(1, min(int(max_count or 5), 5))
+
+		last_error: Exception | None = None
+		for model_name in self._model_candidates:
+			if model_name != self._active_model:
+				try:
+					self._switch_model(model_name)
+				except Exception as exc:
+					last_error = exc
+					continue
+
+			try:
+				raw = self.follow_up_chain.invoke(
+					{
+						"query": query,
+						"answer": answer[:5000],
+						"max_count": target_count,
+					}
+				)
+				return self._normalize_follow_ups(str(raw), target_count)
+			except Exception as exc:
+				last_error = exc
+				error_text = str(exc).lower()
+				if "model_not_found" in error_text or "does not exist" in error_text:
+					logger.warning("Model '%s' unavailable, trying fallback", model_name)
+					continue
+				logger.warning("Failed to generate follow-up questions", exc_info=True)
+				break
+
+		if last_error:
+			logger.info("Using fallback follow-up parsing after model failure: %s", last_error)
+		return []
+
+	@staticmethod
+	def _normalize_follow_ups(raw_text: str, max_count: int) -> list[str]:
+		"""Normalize follow-up output into a clean unique list."""
+		lines = [line.strip() for line in str(raw_text or "").splitlines()]
+		results: list[str] = []
+		seen: set[str] = set()
+
+		for line in lines:
+			if not line:
+				continue
+
+			cleaned = re.sub(r"^[-*\d\.)\s]+", "", line).strip()
+			if not cleaned:
+				continue
+			if not cleaned.endswith("?"):
+				cleaned = f"{cleaned}?"
+			cleaned = " ".join(cleaned.split())[:120]
+
+			key = cleaned.lower()
+			if key in seen:
+				continue
+			seen.add(key)
+			results.append(cleaned)
+
+			if len(results) >= max_count:
+				break
+
+		return results

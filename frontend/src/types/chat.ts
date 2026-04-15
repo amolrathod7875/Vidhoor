@@ -16,6 +16,7 @@ export interface Message {
   content: string;
   citations?: Citation[];
   overall_confidence?: number | null;
+  follow_ups?: string[];
 }
 
 export interface ChatSession {

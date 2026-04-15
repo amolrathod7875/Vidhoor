@@ -50,6 +50,7 @@ interface ChatApiResponse {
   masked_entities: Record<string, unknown>;
   citations?: Citation[];
   overall_confidence?: number | null;
+  follow_ups?: string[];
 }
 
 interface OCRAnalyzeApiResponse {
@@ -125,6 +126,7 @@ interface HistoryMessageResponse {
   masked_entities: Record<string, string>;
   citations?: Citation[];
   overall_confidence?: number | null;
+  follow_ups?: string[];
 }
 
 interface DraftGenerateApiResponse {
@@ -441,6 +443,7 @@ function ChatApp() {
           content: item.content,
           citations: item.citations ?? [],
           overall_confidence: item.overall_confidence ?? null,
+          follow_ups: item.follow_ups ?? [],
         }));
 
         setSessions((prev) =>
@@ -503,7 +506,7 @@ function ChatApp() {
       role: Message["role"],
       content: string,
       sessionId: string,
-      options?: Pick<Message, "citations" | "overall_confidence">
+      options?: Pick<Message, "citations" | "overall_confidence" | "follow_ups">
     ) => {
       const msg: Message = {
         id: createMessageId(),
@@ -511,6 +514,7 @@ function ChatApp() {
         content,
         citations: options?.citations,
         overall_confidence: options?.overall_confidence,
+        follow_ups: options?.follow_ups,
       };
       setSessions((prev) =>
         prev.map((s) =>
@@ -609,6 +613,7 @@ function ChatApp() {
       addMessage("assistant", data.response, sid, {
         citations: data.citations ?? [],
         overall_confidence: data.overall_confidence ?? null,
+        follow_ups: data.follow_ups ?? [],
       });
     } catch (error) {
       console.error(error);
