@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,8 @@ class OracleChatHistoryRepository:
 				role VARCHAR2(32) NOT NULL,
 				content CLOB NOT NULL,
 				masked_entities CLOB,
+				citations_json CLOB,
+				overall_confidence NUMBER,
 				created_at TIMESTAMP DEFAULT SYSTIMESTAMP,
 				CONSTRAINT fk_vidhoor_chat_session
 					FOREIGN KEY (session_id) REFERENCES vidhoor_chat_sessions(session_id)
@@ -193,6 +196,26 @@ class OracleChatHistoryRepository:
 					# ORA-01430: column being added already exists
 					if getattr(error_obj, "code", None) != 1430:
 						raise
+
+				try:
+					cursor.execute(
+						"ALTER TABLE vidhoor_chat_messages ADD (citations_json CLOB)"
+					)
+				except oracledb.DatabaseError as exc:
+					error_obj = exc.args[0]
+					# ORA-01430: column being added already exists
+					if getattr(error_obj, "code", None) != 1430:
+						raise
+
+				try:
+					cursor.execute(
+						"ALTER TABLE vidhoor_chat_messages ADD (overall_confidence NUMBER)"
+					)
+				except oracledb.DatabaseError as exc:
+					error_obj = exc.args[0]
+					# ORA-01430: column being added already exists
+					if getattr(error_obj, "code", None) != 1430:
+						raise
 			connection.commit()
 
 	def save_chat_turn(
@@ -202,6 +225,8 @@ class OracleChatHistoryRepository:
 		user_message: str,
 		assistant_message: str,
 		masked_entities: dict[str, str],
+		assistant_citations: list[dict[str, Any]] | None = None,
+		assistant_overall_confidence: float | None = None,
 		session_title: str | None = None,
 	) -> None:
 		"""Persist one user/assistant message turn in Oracle."""
@@ -209,6 +234,9 @@ class OracleChatHistoryRepository:
 		if len(resolved_title) > 120:
 			resolved_title = resolved_title[:120]
 		masked_entities_json = json.dumps(masked_entities, ensure_ascii=False)
+		assistant_citations_json = None
+		if assistant_citations:
+			assistant_citations_json = json.dumps(assistant_citations, ensure_ascii=False)
 
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
@@ -243,6 +271,8 @@ class OracleChatHistoryRepository:
 						role,
 						content,
 						masked_entities,
+						citations_json,
+						overall_confidence,
 						created_at
 					) VALUES (
 						:session_id,
@@ -250,6 +280,8 @@ class OracleChatHistoryRepository:
 						'user',
 						:content,
 						:masked_entities,
+						NULL,
+						NULL,
 						SYSTIMESTAMP
 					)
 					""",
@@ -269,6 +301,8 @@ class OracleChatHistoryRepository:
 						role,
 						content,
 						masked_entities,
+						citations_json,
+						overall_confidence,
 						created_at
 					) VALUES (
 						:session_id,
@@ -276,6 +310,8 @@ class OracleChatHistoryRepository:
 						'assistant',
 						:content,
 						:masked_entities,
+						:citations_json,
+						:overall_confidence,
 						SYSTIMESTAMP
 					)
 					""",
@@ -284,6 +320,8 @@ class OracleChatHistoryRepository:
 						"user_id": user_id,
 						"content": assistant_message,
 						"masked_entities": masked_entities_json,
+						"citations_json": assistant_citations_json,
+						"overall_confidence": assistant_overall_confidence,
 					},
 				)
 
@@ -405,7 +443,7 @@ class OracleChatHistoryRepository:
 
 				cursor.execute(
 					"""
-					SELECT role, content, created_at, masked_entities
+					SELECT role, content, created_at, masked_entities, citations_json, overall_confidence
 					FROM vidhoor_chat_messages
 					WHERE session_id = :session_id AND user_id = :user_id
 					ORDER BY created_at ASC, message_id ASC
@@ -415,13 +453,20 @@ class OracleChatHistoryRepository:
 				rows = cursor.fetchall()
 
 				messages: list[dict[str, Any]] = []
-				for role, content, created_at, masked_entities in rows:
+				for role, content, created_at, masked_entities, citations_json, overall_confidence in rows:
+					content_text = content.read() if hasattr(content, "read") else str(content)
+					decoded_citations = _decode_json_list(citations_json)
+					if role == "assistant" and not decoded_citations:
+						decoded_citations = _extract_markdown_link_citations(content_text)
+
 					messages.append(
 						{
 							"role": role,
-							"content": content.read() if hasattr(content, "read") else str(content),
+							"content": content_text,
 							"created_at": _iso(created_at),
 							"masked_entities": _decode_json(masked_entities),
+							"citations": decoded_citations,
+							"overall_confidence": float(overall_confidence) if overall_confidence is not None else None,
 						}
 					)
 				return messages
@@ -858,6 +903,55 @@ def _decode_json(value: Any) -> dict[str, str]:
 		return parsed if isinstance(parsed, dict) else {}
 	except Exception:
 		return {}
+
+
+def _decode_json_list(value: Any) -> list[dict[str, Any]]:
+	"""Safely decode JSON CLOB/string values as a list of dict items."""
+	if value is None:
+		return []
+
+	text_value = value.read() if hasattr(value, "read") else str(value)
+	try:
+		parsed = json.loads(text_value)
+		if isinstance(parsed, list):
+			return [item for item in parsed if isinstance(item, dict)]
+		return []
+	except Exception:
+		return []
+
+
+def _extract_markdown_link_citations(content: str) -> list[dict[str, Any]]:
+	"""Backfill citation-like resources from markdown links in legacy assistant messages."""
+	text = str(content or "")
+	if not text:
+		return []
+
+	link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", flags=re.IGNORECASE)
+	results: list[dict[str, Any]] = []
+	seen_urls: set[str] = set()
+
+	for match in link_pattern.finditer(text):
+		title = str(match.group(1) or "").strip()
+		url = str(match.group(2) or "").strip()
+		if not url or url in seen_urls:
+			continue
+		seen_urls.add(url)
+
+		source_label = "Indian Kanoon" if "indiankanoon" in url.lower() else "External Source"
+		results.append(
+			{
+				"doc_id": url,
+				"title": title or source_label,
+				"source": source_label,
+				"source_url": url,
+				"section": "",
+				"snippet": title or url,
+				"confidence": 0.35,
+				"last_updated": "",
+			}
+		)
+
+	return results
 
 
 def _iso(value: Any) -> str:

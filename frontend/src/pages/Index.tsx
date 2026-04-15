@@ -123,6 +123,8 @@ interface HistoryMessageResponse {
   content: string;
   created_at: string;
   masked_entities: Record<string, string>;
+  citations?: Citation[];
+  overall_confidence?: number | null;
 }
 
 interface DraftGenerateApiResponse {
@@ -437,6 +439,8 @@ function ChatApp() {
           id: createMessageId(),
           role: item.role,
           content: item.content,
+          citations: item.citations ?? [],
+          overall_confidence: item.overall_confidence ?? null,
         }));
 
         setSessions((prev) =>

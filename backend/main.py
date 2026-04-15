@@ -178,6 +178,8 @@ class SessionMessage(BaseModel):
     content: str
     created_at: str
     masked_entities: dict[str, str]
+    citations: list[Citation] = []
+    overall_confidence: Optional[float] = None
 
 
 class UpdateSessionRequest(BaseModel):
@@ -1416,6 +1418,8 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                     user_message=chat_request.message,
                     assistant_message=final_readable_response,
                     masked_entities=pii_map,
+                    assistant_citations=[item.model_dump() for item in citations],
+                    assistant_overall_confidence=overall_confidence,
                     session_title=session_title,
                 )
             except Exception as exc:
@@ -1807,6 +1811,8 @@ async def analyze_fir_document(
                     user_message=f"Uploaded document: {filename}",
                     assistant_message="\n".join(assistant_content),
                     masked_entities=pii_map,
+                    assistant_citations=[item.model_dump() for item in citations],
+                    assistant_overall_confidence=overall_confidence,
                 )
             except Exception as exc:
                 logger.exception("Failed to persist upload chat history: %s", exc)
