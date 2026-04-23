@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { MessageSquare, ArrowLeft } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface SharedMessage {
   role: "user" | "assistant";
@@ -144,7 +146,36 @@ const SharedConversation = () => {
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
                   {isUser ? "User" : "Vidhoor"}
                 </p>
-                <p className="whitespace-pre-wrap text-sm leading-6 text-slate-800">{message.content}</p>
+                <div className="prose prose-sm max-w-none text-slate-800 prose-p:my-2 prose-headings:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      a: ({ node, href, ...props }) => (
+                        <a
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-700 underline underline-offset-2 hover:text-blue-800"
+                          {...props}
+                        />
+                      ),
+                      h1: ({ node, ...props }) => (
+                        <h1 className="text-xl font-bold leading-snug" {...props} />
+                      ),
+                      h2: ({ node, ...props }) => (
+                        <h2 className="text-lg font-bold leading-snug" {...props} />
+                      ),
+                      h3: ({ node, ...props }) => (
+                        <h3 className="text-base font-semibold leading-snug" {...props} />
+                      ),
+                      p: ({ node, ...props }) => (
+                        <p className="whitespace-pre-wrap text-sm leading-6 text-slate-800" {...props} />
+                      ),
+                    }}
+                  >
+                    {message.content}
+                  </ReactMarkdown>
+                </div>
               </div>
             );
           })}
