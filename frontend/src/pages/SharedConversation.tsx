@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { MessageSquare, ArrowLeft } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 interface SharedMessage {
   role: "user" | "assistant";
@@ -34,27 +32,6 @@ const resolveApiBaseUrl = (): string => {
 };
 
 const API_BASE_URL = resolveApiBaseUrl();
-
-const SMALL_TALK_PATTERNS = [
-  /^(hi|hello|hey)\b/i,
-  /how can i assist you today\??/i,
-  /are you looking for information on a particular topic\??/i,
-  /you'?ve initiated a conversation with me/i,
-  /what'?s on your mind\??/i,
-];
-
-const isLikelySmallTalk = (text: string): boolean => {
-  const value = String(text || "").trim();
-  if (!value) {
-    return true;
-  }
-
-  if (value.length <= 8 && /^(hi|hey|hello|yo)$/i.test(value)) {
-    return true;
-  }
-
-  return SMALL_TALK_PATTERNS.some((pattern) => pattern.test(value));
-};
 
 const SharedConversation = () => {
   const { shareId } = useParams<{ shareId: string }>();
@@ -108,16 +85,6 @@ const SharedConversation = () => {
     return timestamp.toLocaleString();
   }, [payload?.updated_at]);
 
-  const visibleMessages = useMemo(() => {
-    const all = payload?.messages || [];
-    if (all.length === 0) {
-      return [];
-    }
-
-    const filtered = all.filter((item) => !isLikelySmallTalk(item.content));
-    return filtered.length > 0 ? filtered : all;
-  }, [payload?.messages]);
-
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -163,7 +130,7 @@ const SharedConversation = () => {
         </div>
 
         <div className="space-y-3">
-          {visibleMessages.map((message, index) => {
+          {(payload?.messages || []).map((message, index) => {
             const isUser = message.role === "user";
             return (
               <div
@@ -177,34 +144,7 @@ const SharedConversation = () => {
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
                   {isUser ? "User" : "Vidhoor"}
                 </p>
-                {isUser ? (
-                  <p className="whitespace-pre-wrap text-sm leading-6 text-slate-800">{message.content}</p>
-                ) : (
-                  <div className="prose prose-sm max-w-none text-slate-800 prose-headings:my-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        a: ({ node, href, ...props }) => (
-                          <a
-                            href={href}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-700 underline underline-offset-2 hover:text-blue-800"
-                            {...props}
-                          />
-                        ),
-                        h2: ({ node, ...props }) => (
-                          <h2 className="mt-4 text-lg font-bold leading-snug" {...props} />
-                        ),
-                        h3: ({ node, ...props }) => (
-                          <h3 className="mt-3 text-base font-bold leading-snug" {...props} />
-                        ),
-                      }}
-                    >
-                      {message.content}
-                    </ReactMarkdown>
-                  </div>
-                )}
+                <p className="whitespace-pre-wrap text-sm leading-6 text-slate-800">{message.content}</p>
               </div>
             );
           })}
