@@ -156,6 +156,12 @@ interface DraftRecordApiResponse {
   updated_at: string;
 }
 
+interface SessionShareApiResponse {
+  share_id: string;
+  share_url: string;
+  expires_at?: string | null;
+}
+
 type DraftFlowState =
   | { step: "idle" }
   | { step: "awaitingType"; sessionId: string }
@@ -1130,23 +1136,54 @@ function ChatApp() {
     const session = sessions.find((s) => s.id === id);
     if (!session) return;
 
-    const text = session.messages
-      .map((m) => `${m.role === "user" ? "You" : "Vidhoor"}: ${m.content}`)
-      .join("\n\n");
+    try {
+      let shareUrl = "";
 
-    const shareData = { title: session.title, text };
+      if (user) {
+        const token = await user.getIdToken();
+        const response = await fetch(
+          `${API_BASE_URL}/api/history/sessions/${id}/share`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
 
-    if (navigator.share) {
-      try {
-        await navigator.share(shareData);
-      } catch {
-        /* user cancelled */
+        if (!response.ok) {
+          throw new Error(`Failed to create share link (${response.status})`);
+        }
+
+        const payload = (await response.json()) as SessionShareApiResponse;
+        shareUrl = String(payload.share_url || "").trim();
       }
-    } else {
-      await navigator.clipboard.writeText(
-        `${session.title}\n\n${text || "(empty chat)"}`
-      );
-      toast.success("Chat copied to clipboard");
+
+      if (!shareUrl) {
+        throw new Error("Unable to generate share URL");
+      }
+
+      const shareData = {
+        title: session.title,
+        text: `Shared conversation: ${session.title}`,
+        url: shareUrl,
+      };
+
+      if (navigator.share) {
+        try {
+          await navigator.share(shareData);
+          return;
+        } catch {
+          // If user cancels native share, do not show an error toast.
+          return;
+        }
+      }
+
+      await navigator.clipboard.writeText(shareUrl);
+      toast.success("Share link copied to clipboard");
+    } catch (error) {
+      console.error(error);
+      toast.error("Could not create share link");
     }
   };
 

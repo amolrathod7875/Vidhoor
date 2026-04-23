@@ -5,10 +5,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Any, Optional
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -189,6 +192,20 @@ class UpdateSessionRequest(BaseModel):
     pinned: bool | None = None
 
 
+class SessionShareCreateResponse(BaseModel):
+    share_id: str
+    share_url: str
+    expires_at: Optional[str] = None
+
+
+class SharedSessionPayload(BaseModel):
+    session_id: str
+    title: str
+    messages: list[SessionMessage]
+    created_at: str
+    updated_at: str
+
+
 class DraftGenerateRequest(BaseModel):
     application_type: str = "bail_application"
     case_facts: str
@@ -256,6 +273,8 @@ _chat_repo: Optional[OracleChatHistoryRepository] = None
 _ocr_service: Optional[VisionOCRService] = None
 _bm25_refresh_counter: int = 0
 _firebase_auth_initialized: bool = False
+
+_SHARE_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
 
 
 LEGAL_QUERY_KEYWORDS = {
@@ -855,6 +874,89 @@ def _derive_legal_source_base_url(request: Request | None = None) -> str:
         return f"{request.url.scheme}://{request.url.netloc}/legal"
 
     return ""
+
+
+def _derive_app_public_base_url(request: Request | None = None) -> str:
+    """Resolve public app base URL for user-facing links."""
+    configured = os.environ.get("APP_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+
+    if request:
+        return f"{request.url.scheme}://{request.url.netloc}"
+
+    return ""
+
+
+def _get_share_signing_secret() -> bytes:
+    """Resolve HMAC secret used for share link signing."""
+    configured = os.environ.get("SHARE_LINK_SECRET", "").strip()
+    if configured:
+        return configured.encode("utf-8")
+
+    fallback = os.environ.get("CEREBRAS_API_KEY", "").strip()
+    if fallback:
+        logger.warning("SHARE_LINK_SECRET not set; using CEREBRAS_API_KEY as fallback")
+        return fallback.encode("utf-8")
+
+    raise EnvironmentError("Missing SHARE_LINK_SECRET (or fallback CEREBRAS_API_KEY)")
+
+
+def _create_share_id(user_id: str, session_id: str, ttl_seconds: int = _SHARE_TOKEN_TTL_SECONDS) -> str:
+    """Create signed, url-safe share identifier for one user session."""
+    now = int(time.time())
+    exp = now + max(60, int(ttl_seconds))
+    payload = {
+        "uid": str(user_id).strip(),
+        "sid": str(session_id).strip(),
+        "iat": now,
+        "exp": exp,
+    }
+    payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    payload_b64 = base64.urlsafe_b64encode(payload_json.encode("utf-8")).decode("ascii").rstrip("=")
+
+    secret = _get_share_signing_secret()
+    signature = hmac.new(secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+    return f"{payload_b64}.{sig_b64}"
+
+
+def _decode_share_id(share_id: str) -> dict[str, Any]:
+    """Validate and decode signed share identifier."""
+    token = str(share_id or "").strip()
+    if not token or "." not in token:
+        raise HTTPException(status_code=400, detail="Invalid share id")
+
+    payload_b64, sig_b64 = token.split(".", 1)
+    if not payload_b64 or not sig_b64:
+        raise HTTPException(status_code=400, detail="Invalid share id")
+
+    secret = _get_share_signing_secret()
+    expected_sig = hmac.new(secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
+    expected_sig_b64 = base64.urlsafe_b64encode(expected_sig).decode("ascii").rstrip("=")
+    if not hmac.compare_digest(expected_sig_b64, sig_b64):
+        raise HTTPException(status_code=403, detail="Invalid share signature")
+
+    padded_payload = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+    try:
+        payload_raw = base64.urlsafe_b64decode(padded_payload.encode("ascii"))
+        payload = json.loads(payload_raw.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Malformed share payload: {exc}")
+
+    uid = str(payload.get("uid") or "").strip()
+    sid = str(payload.get("sid") or "").strip()
+    exp = int(payload.get("exp") or 0)
+    if not uid or not sid or not exp:
+        raise HTTPException(status_code=400, detail="Incomplete share payload")
+
+    if exp < int(time.time()):
+        raise HTTPException(status_code=410, detail="Share link expired")
+
+    payload["uid"] = uid
+    payload["sid"] = sid
+    payload["exp"] = exp
+    return payload
 
 
 def _is_local_source_url(value: str | None) -> bool:
@@ -2072,6 +2174,75 @@ async def delete_history_session(session_id: str, user: dict = Depends(verify_to
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to delete session: {exc}")
+
+
+@app.post("/api/history/sessions/{session_id}/share", response_model=SessionShareCreateResponse)
+async def create_share_link(
+    session_id: str,
+    request: Request,
+    user: dict = Depends(verify_token),
+):
+    """Create a signed public share link for a user-owned chat session."""
+    user_id = get_required_user_id(user)
+
+    try:
+        chat_repo = get_chat_repo()
+        rows = chat_repo.get_session_messages(user_id=user_id, session_id=session_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        share_id = _create_share_id(user_id=user_id, session_id=session_id)
+        base_url = _derive_app_public_base_url(request)
+        if not base_url:
+            raise HTTPException(status_code=500, detail="Unable to derive public base URL")
+
+        share_url = f"{base_url}/shared/{share_id}"
+        exp_ts = _decode_share_id(share_id).get("exp")
+        expires_at = datetime.fromtimestamp(int(exp_ts)).isoformat() if exp_ts else None
+        return SessionShareCreateResponse(
+            share_id=share_id,
+            share_url=share_url,
+            expires_at=expires_at,
+        )
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create share link: {exc}")
+
+
+@app.get("/api/shared/{share_id}", response_model=SharedSessionPayload)
+async def get_shared_session(share_id: str):
+    """Read a shared chat session without authentication using signed link token."""
+    decoded = _decode_share_id(share_id)
+    user_id = str(decoded["uid"])
+    session_id = str(decoded["sid"])
+
+    try:
+        chat_repo = get_chat_repo()
+        sessions = chat_repo.list_sessions(user_id=user_id)
+        session_meta = next((item for item in sessions if item.get("session_id") == session_id), None)
+        if not session_meta:
+            raise HTTPException(status_code=404, detail="Shared session not found")
+
+        rows = chat_repo.get_session_messages(user_id=user_id, session_id=session_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail="Shared session not found")
+
+        return SharedSessionPayload(
+            session_id=session_id,
+            title=str(session_meta.get("title") or "Shared Conversation").strip() or "Shared Conversation",
+            messages=[SessionMessage(**item) for item in rows],
+            created_at=str(session_meta.get("created_at") or ""),
+            updated_at=str(session_meta.get("updated_at") or ""),
+        )
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch shared session: {exc}")
 
 if __name__ == "__main__":
     # Run the server on port 8000
