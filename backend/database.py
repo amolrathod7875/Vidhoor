@@ -887,6 +887,46 @@ class OracleChatHistoryRepository:
 
 		return result
 
+	def update_user_draft(
+		self,
+		user_id: str,
+		draft_id: str,
+		title: str | None = None,
+		draft_content: str | None = None,
+	) -> bool:
+		"""Update draft title/content for a user-owned draft."""
+		updates = ["updated_at = SYSTIMESTAMP"]
+		params: dict[str, Any] = {
+			"user_id": user_id,
+			"draft_id": draft_id,
+		}
+
+		if title is not None:
+			updates.append("title = :title")
+			params["title"] = str(title).strip()[:512]
+
+		if draft_content is not None:
+			updates.append("draft_content = :draft_content")
+			params["draft_content"] = str(draft_content)
+
+		if len(updates) == 1:
+			return False
+
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					f"""
+					UPDATE vidhoor_user_drafts
+					SET {', '.join(updates)}
+					WHERE user_id = :user_id AND draft_id = :draft_id
+					""",
+					params,
+				)
+				updated = cursor.rowcount > 0
+			connection.commit()
+
+		return updated
+
 	def mark_draft_delivery(
 		self,
 		user_id: str,

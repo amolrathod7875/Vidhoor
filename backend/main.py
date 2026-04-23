@@ -228,6 +228,11 @@ class DraftEmailRequest(BaseModel):
     recipient_email: str | None = None
 
 
+class DraftUpdateRequest(BaseModel):
+    title: str | None = None
+    draft_content: str | None = None
+
+
 class DraftEmailResponse(BaseModel):
     draft_id: str
     sent: bool
@@ -1795,6 +1800,46 @@ async def get_saved_draft(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch draft: {exc}")
+
+
+@app.patch("/api/drafts/{draft_id}", response_model=DraftRecord)
+async def update_saved_draft(
+    draft_id: str,
+    request: DraftUpdateRequest,
+    user: dict = Depends(verify_token),
+):
+    """Update saved draft title/content for authenticated user."""
+    user_id = get_required_user_id(user)
+
+    next_title = request.title.strip() if request.title is not None else None
+    next_content = request.draft_content if request.draft_content is not None else None
+
+    if next_title is not None and not next_title:
+        raise HTTPException(status_code=400, detail="title cannot be empty")
+    if next_content is not None and not str(next_content).strip():
+        raise HTTPException(status_code=400, detail="draft_content cannot be empty")
+
+    try:
+        chat_repo = get_chat_repo()
+        updated = chat_repo.update_user_draft(
+            user_id=user_id,
+            draft_id=draft_id,
+            title=next_title,
+            draft_content=next_content,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Draft not found")
+
+        latest = chat_repo.get_user_draft(user_id=user_id, draft_id=draft_id)
+        if not latest:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        return DraftRecord(**latest)
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update draft: {exc}")
 
 
 @app.get("/api/drafts/{draft_id}/export")

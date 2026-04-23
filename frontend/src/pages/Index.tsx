@@ -156,6 +156,11 @@ interface DraftRecordApiResponse {
   updated_at: string;
 }
 
+interface DraftUpdateApiRequest {
+  title?: string;
+  draft_content?: string;
+}
+
 interface SessionShareApiResponse {
   share_id: string;
   share_url: string;
@@ -252,6 +257,11 @@ function ChatApp() {
   const [composerText, setComposerText] = useState("");
   const [connectedDocuments, setConnectedDocuments] = useState<ConnectedDocumentResponse[]>([]);
   const [showDraftTile, setShowDraftTile] = useState(true);
+  const [draftEditorOpen, setDraftEditorOpen] = useState(false);
+  const [isSavingDraftEdit, setIsSavingDraftEdit] = useState(false);
+  const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
+  const [editingDraftTitle, setEditingDraftTitle] = useState("");
+  const [editingDraftContent, setEditingDraftContent] = useState("");
   const [tempChat, setTempChat] = useState(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const prevTempChat = useRef(tempChat);
@@ -991,6 +1001,106 @@ function ChatApp() {
     }
   };
 
+  const handleEditDraft = async (draftId: string) => {
+    if (!user) {
+      setLoginOpen(true);
+      return;
+    }
+
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch(`${API_BASE_URL}/api/drafts/${encodeURIComponent(draftId)}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Could not load draft (${response.status})`);
+      }
+
+      const draft = (await response.json()) as DraftRecordApiResponse;
+      setEditingDraftId(draft.draft_id);
+      setEditingDraftTitle(draft.title || "Legal Draft");
+      setEditingDraftContent(draft.draft_content || "");
+      setDraftEditorOpen(true);
+    } catch (error) {
+      console.error(error);
+      toast.error("Could not open draft editor");
+    }
+  };
+
+  const handleSaveDraftEdits = async () => {
+    if (!user || !editingDraftId) {
+      return;
+    }
+
+    const nextTitle = editingDraftTitle.trim();
+    const nextContent = editingDraftContent.trim();
+    if (!nextTitle) {
+      toast.error("Draft title cannot be empty");
+      return;
+    }
+    if (!nextContent) {
+      toast.error("Draft content cannot be empty");
+      return;
+    }
+
+    setIsSavingDraftEdit(true);
+    try {
+      const token = await user.getIdToken();
+      const payload: DraftUpdateApiRequest = {
+        title: nextTitle,
+        draft_content: nextContent,
+      };
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/drafts/${encodeURIComponent(editingDraftId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      if (!response.ok) {
+        const errorBody = (await response.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(errorBody?.detail || `Could not save draft (${response.status})`);
+      }
+
+      const updated = (await response.json()) as DraftRecordApiResponse;
+      setDraftHistory((prev) =>
+        prev.map((draft) =>
+          draft.draft_id === updated.draft_id ? updated : draft
+        )
+      );
+
+      const targetSessionId = (updated.session_id || activeId || "").trim();
+      if (targetSessionId) {
+        const updatedAssistantContent = [
+          `### ${updated.title}`,
+          updated.draft_content,
+          "",
+          "> Updated draft saved.",
+        ].join("\n");
+        addMessage("assistant", updatedAssistantContent, targetSessionId);
+        await fetchSessionDrafts(targetSessionId);
+      }
+
+      setDraftEditorOpen(false);
+      toast.success("Draft updated");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Could not save draft");
+    } finally {
+      setIsSavingDraftEdit(false);
+    }
+  };
+
   const getMimeTypeFromExtension = (extension: string | undefined): string => {
     const normalized = (extension || "").toLowerCase();
     switch (normalized) {
@@ -1491,6 +1601,17 @@ function ChatApp() {
                                 size="sm"
                                 className="h-7 px-2 text-[11px]"
                                 onClick={() => {
+                                  void handleEditDraft(draft.draft_id);
+                                }}
+                              >
+                                <Pencil className="mr-1 h-3.5 w-3.5" />
+                                Edit
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={() => {
                                   void handleDownloadDraft(draft.draft_id, "pdf");
                                 }}
                               >
@@ -1615,6 +1736,65 @@ function ChatApp() {
                 }
               >
                 Rename
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={draftEditorOpen}
+        onOpenChange={(open) => {
+          setDraftEditorOpen(open);
+          if (!open) {
+            setEditingDraftId(null);
+            setEditingDraftTitle("");
+            setEditingDraftContent("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-semibold">Edit Draft</DialogTitle>
+          </DialogHeader>
+
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleSaveDraftEdits();
+            }}
+          >
+            <Input
+              value={editingDraftTitle}
+              onChange={(event) => setEditingDraftTitle(event.target.value)}
+              placeholder="Draft title"
+              maxLength={120}
+              className="h-11 rounded-lg"
+            />
+
+            <textarea
+              value={editingDraftContent}
+              onChange={(event) => setEditingDraftContent(event.target.value)}
+              placeholder="Edit draft content"
+              rows={16}
+              className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm leading-6 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+
+            <DialogFooter className="gap-2 sm:justify-end sm:space-x-0">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setDraftEditorOpen(false)}
+                disabled={isSavingDraftEdit}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={isSavingDraftEdit || !editingDraftTitle.trim() || !editingDraftContent.trim()}
+              >
+                {isSavingDraftEdit ? "Saving..." : "Save Draft"}
               </Button>
             </DialogFooter>
           </form>
