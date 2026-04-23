@@ -882,7 +882,28 @@ def _derive_app_public_base_url(request: Request | None = None) -> str:
     if configured:
         return configured
 
+    def _normalize_origin(value: str | None) -> str:
+        candidate = str(value or "").strip().rstrip("/")
+        if not _is_http_url(candidate):
+            return ""
+        parsed = urlsplit(candidate)
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        return f"{parsed.scheme}://{parsed.netloc}"
+
     if request:
+        frontend_origin = _normalize_origin(request.headers.get("x-frontend-origin"))
+        if frontend_origin:
+            return frontend_origin
+
+        origin = _normalize_origin(request.headers.get("origin"))
+        if origin:
+            return origin
+
+        referer = _normalize_origin(request.headers.get("referer"))
+        if referer:
+            return referer
+
         return f"{request.url.scheme}://{request.url.netloc}"
 
     return ""

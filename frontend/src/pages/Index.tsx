@@ -1147,6 +1147,7 @@ function ChatApp() {
             method: "POST",
             headers: {
               Authorization: `Bearer ${token}`,
+              "X-Frontend-Origin": window.location.origin,
             },
           }
         );
