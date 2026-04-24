@@ -110,6 +110,13 @@ class LLMEngine:
 						"- Practical application: bullet points only\n"
 						"- Limits and uncertainty: bullet points only\n"
 						"- Repeat one ### block for each relevant section available in context\n\n"
+						"## Summary table of applicable laws\n"
+						"| Offence | BNS Section | Description |\n"
+						"| --- | --- | --- |\n"
+						"| <Short offence label> | Section <Number> | <Single-sentence practical use for this query> |\n"
+						"- Include one row per relevant provision from context.\n"
+						"- Keep each cell on one line and do not add line breaks inside table cells.\n"
+						"- Place this table at the very end of the response.\n\n"
 						"Mandatory rules:\n"
 						"- For each action, cite at least one legal basis from context.\n"
 						"- Mention only provisions present in the provided context.\n"
@@ -309,6 +316,58 @@ class LLMEngine:
 
 		return updated_text
 
+	@staticmethod
+	def _normalize_summary_table(markdown_text: str) -> str:
+		"""Normalize final summary table to a consistent markdown grid format."""
+		if not markdown_text or not markdown_text.strip():
+			return markdown_text
+
+		lines = markdown_text.splitlines()
+		heading_index: int | None = None
+		for i, line in enumerate(lines):
+			if line.strip().lower() == "## summary table of applicable laws":
+				heading_index = i
+				break
+
+		if heading_index is None:
+			return markdown_text
+
+		trailing_lines = lines[heading_index + 1 :]
+		table_rows: list[list[str]] = []
+
+		for line in trailing_lines:
+			stripped = line.strip()
+			if not stripped.startswith("|"):
+				continue
+			cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+			if len(cells) < 3:
+				continue
+			if all(re.fullmatch(r"-+", cell.replace(" ", "")) for cell in cells[:3]):
+				continue
+			normalized = [re.sub(r"\s+", " ", cell).strip() for cell in cells[:3]]
+			table_rows.append(normalized)
+
+		if table_rows:
+			# Remove likely header row if model already emitted one.
+			first = [value.lower() for value in table_rows[0]]
+			if first[0] in {"offence", "legal act"} and first[1] in {"bns section", "section"}:
+				table_rows = table_rows[1:]
+
+		rebuilt_table = [
+			"## Summary table of applicable laws",
+			"| Offence | BNS Section | Description |",
+			"| --- | --- | --- |",
+		]
+
+		for row in table_rows:
+			rebuilt_table.append(f"| {row[0]} | {row[1]} | {row[2]} |")
+
+		if not table_rows:
+			rebuilt_table.append("| Not available in retrieved context | Not available | Context did not include enough detail to populate the table. |")
+
+		prefix = lines[:heading_index]
+		return "\n".join(prefix + [""] + rebuilt_table).strip()
+
 	def generate_legal_response(
 		self,
 		masked_query: str,
@@ -354,7 +413,8 @@ class LLMEngine:
 					}
 				)
 				normalized_response = self._enforce_subheading_bullets(str(raw_response))
-				return self._bold_legal_labels(normalized_response)
+				normalized_response = self._bold_legal_labels(normalized_response)
+				return self._normalize_summary_table(normalized_response)
 			except Exception as exc:
 				last_error = exc
 				error_text = str(exc).lower()

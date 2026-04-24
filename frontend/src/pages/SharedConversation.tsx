@@ -171,6 +171,24 @@ const SharedConversation = () => {
                       p: ({ node, ...props }) => (
                         <p className="whitespace-pre-wrap text-sm leading-6 text-slate-800" {...props} />
                       ),
+                      table: ({ node, ...props }) => (
+                        <div className="my-3 overflow-x-auto">
+                          <table className="w-full border-collapse text-left text-sm" {...props} />
+                        </div>
+                      ),
+                      thead: ({ node, ...props }) => (
+                        <thead className="border-b border-slate-300" {...props} />
+                      ),
+                      tbody: ({ node, ...props }) => <tbody {...props} />,
+                      tr: ({ node, ...props }) => (
+                        <tr className="border-b border-slate-300" {...props} />
+                      ),
+                      th: ({ node, ...props }) => (
+                        <th className="px-3 py-3 text-base font-semibold text-slate-900 align-top" {...props} />
+                      ),
+                      td: ({ node, ...props }) => (
+                        <td className="px-3 py-4 text-base leading-7 text-slate-800 align-top" {...props} />
+                      ),
                     }}
                   >
                     {message.content}

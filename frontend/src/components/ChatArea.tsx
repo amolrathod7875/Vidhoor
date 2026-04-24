@@ -165,6 +165,24 @@ export function ChatArea({
                       h3: ({ node, ...props }) => (
                         <h3 className="mt-3 text-base font-bold leading-snug" {...props} />
                       ),
+                      table: ({ node, ...props }) => (
+                        <div className="my-3 overflow-x-auto">
+                          <table className="w-full border-collapse text-left text-[15px]" {...props} />
+                        </div>
+                      ),
+                      thead: ({ node, ...props }) => (
+                        <thead className="border-b border-border/70" {...props} />
+                      ),
+                      tbody: ({ node, ...props }) => <tbody {...props} />,
+                      tr: ({ node, ...props }) => (
+                        <tr className="border-b border-border/70" {...props} />
+                      ),
+                      th: ({ node, ...props }) => (
+                        <th className="px-3 py-3 text-base font-semibold text-foreground align-top" {...props} />
+                      ),
+                      td: ({ node, ...props }) => (
+                        <td className="px-3 py-4 text-base leading-7 text-foreground align-top" {...props} />
+                      ),
                     }}
                   >
                     {msg.content}
