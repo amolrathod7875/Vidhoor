@@ -114,6 +114,7 @@ class LLMEngine:
 						"- For each action, cite at least one legal basis from context.\n"
 						"- Mention only provisions present in the provided context.\n"
 						"- If context is insufficient, explicitly say so and avoid guessing.\n"
+						"- Bold these labels exactly when used: **Legal basis:**, **Why this helps:**, **What the law states:**, **Essential legal ingredients:**, **Punishment or legal consequences:**, **Exceptions, provisos, and defences:**, **Practical application:**.\n"
 						"- Do not write plain paragraphs under any ### subheading."
 					),
 				),
@@ -282,6 +283,32 @@ class LLMEngine:
 
 		return "\n".join(normalized_lines)
 
+	@staticmethod
+	def _bold_legal_labels(markdown_text: str) -> str:
+		"""Ensure key legal field labels are bolded for markdown readability."""
+		if not markdown_text or not markdown_text.strip():
+			return markdown_text
+
+		labels = [
+			"Legal basis:",
+			"Why this helps:",
+			"What the law states:",
+			"Essential legal ingredients:",
+			"Punishment or legal consequences:",
+			"Exceptions, provisos, and defences:",
+			"Practical application:",
+		]
+
+		updated_text = markdown_text
+		for label in labels:
+			updated_text = re.sub(
+				rf"(?im)^(\s*-\s*)?(?!\*\*)({re.escape(label)})(\s*)",
+				lambda match: f"{match.group(1) or ''}**{match.group(2)}**{match.group(3)}",
+				updated_text,
+			)
+
+		return updated_text
+
 	def generate_legal_response(
 		self,
 		masked_query: str,
@@ -326,7 +353,8 @@ class LLMEngine:
 						"context": context_text,
 					}
 				)
-				return self._enforce_subheading_bullets(str(raw_response))
+				normalized_response = self._enforce_subheading_bullets(str(raw_response))
+				return self._bold_legal_labels(normalized_response)
 			except Exception as exc:
 				last_error = exc
 				error_text = str(exc).lower()
