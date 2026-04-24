@@ -99,6 +99,7 @@ class LLMEngine:
 						"1. Cross-verify Section Numbers: Sometimes metadata tags (like 'Section 64') are incorrectly applied to text describing different sections (like Section 65 or 66).\n"
 						"2. Content Priority: If the retrieved text describes rape of a minor (under 16 or 12 years) or mentions the death penalty, it is likely BNS Section 65 or 66. Do NOT label this as 'Section 64' just because the metadata suggests it.\n"
 						"3. If you detect a conflict between the text content and the section number in the metadata, prioritize the text's legal description and use the correct BNS section number in your output.\n\n"
+						"If a specific section is requested (for example, Section 64) and the provided context only describes a different section (for example, Section 93), do NOT answer using Section 93. State that the context for the requested section is missing.\n\n"
 						"Answer in professional legal language. Return markdown using this structure exactly and do not add a summary section:\n"
 						"## What you can do\n"
 						"- Action or remedy in plain language\n"

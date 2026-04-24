@@ -350,6 +350,12 @@ def detect_reference(
     """Extract article/section metadata from chunk with fallback carry-forward."""
     metadata: dict[str, str] = {}
 
+    # Prefer explicit act cues in chunk text to avoid BNSS/BNS mislabeling.
+    if re.search(r"\b(?:Nagarik\s+Suraksha|BNSS)\b", chunk, flags=re.IGNORECASE):
+        metadata["act"] = "Bharatiya Nagarik Suraksha Sanhita"
+    elif re.search(r"\b(?:Nyaya\s+Sanhita|BNS)\b", chunk, flags=re.IGNORECASE):
+        metadata["act"] = "Bharatiya Nyaya Sanhita"
+
     article_matches = re.findall(
         r"\b(?:Article|Art\.?)\s*[-:]?\s*([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
         chunk,
