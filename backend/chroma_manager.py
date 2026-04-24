@@ -291,6 +291,10 @@ def _extract_query_references(query: str) -> tuple[list[str], list[str]]:
 		if value not in ordered_sections:
 			ordered_sections.append(value)
 
+	# BNS Section 64 (punishment) relies on Section 63 (definition); retrieve both.
+	if "64" in ordered_sections and "63" not in ordered_sections:
+		ordered_sections.append("63")
+
 	ordered_articles: list[str] = []
 	for value in article_refs:
 		if value not in ordered_articles:

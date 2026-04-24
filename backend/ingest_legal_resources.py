@@ -274,8 +274,8 @@ def read_resource(file_path: Path) -> str:
     return read_text_file(file_path)
 
 
-def split_into_chunks(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[str]:
-    """Split text into overlapping character chunks for embedding."""
+def split_into_chunks(text: str, chunk_size: int = 700, overlap: int = 200) -> list[str]:
+    """Split text into overlapping chunks with hard breaks on section headers."""
     if chunk_size <= 0:
         raise ValueError("chunk_size must be > 0")
     if overlap < 0:
@@ -283,20 +283,40 @@ def split_into_chunks(text: str, chunk_size: int = 1200, overlap: int = 200) -> 
     if overlap >= chunk_size:
         raise ValueError("overlap must be smaller than chunk_size")
 
-    normalized = re.sub(r"\s+", " ", text).strip()
-    if not normalized:
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.strip():
         return []
+
+    # Gazette-style section headers usually appear like "\n64. ...".
+    hard_break_pattern = re.compile(r"\n([0-9]{1,3})\.\s")
+    break_points = [0]
+    break_points.extend(match.start() + 1 for match in hard_break_pattern.finditer(normalized))
+    break_points.append(len(normalized))
+
+    segments: list[str] = []
+    for index in range(len(break_points) - 1):
+        segment = normalized[break_points[index] : break_points[index + 1]].strip()
+        if segment:
+            # Preserve newlines for line-aware section detection while normalizing spacing.
+            segments.append(re.sub(r"[ \t]+", " ", segment))
 
     chunks: list[str] = []
     step = chunk_size - overlap
-    start = 0
 
-    while start < len(normalized):
-        end = min(start + chunk_size, len(normalized))
-        chunks.append(normalized[start:end])
-        if end == len(normalized):
-            break
-        start += step
+    for segment in segments:
+        if len(segment) <= chunk_size:
+            chunks.append(segment)
+            continue
+
+        start = 0
+        while start < len(segment):
+            end = min(start + chunk_size, len(segment))
+            piece = segment[start:end].strip()
+            if piece:
+                chunks.append(piece)
+            if end == len(segment):
+                break
+            start += step
 
     return chunks
 
@@ -340,12 +360,21 @@ def detect_reference(
     elif default_article:
         metadata["article"] = default_article
 
+    # Prefer section headers at line start, e.g. "64. ..." in gazette texts.
+    section_header = re.search(
+        r"^\s*([0-9]{1,3}[A-Z]?)\.",
+        chunk,
+        flags=re.MULTILINE,
+    )
+    section_value = section_header.group(1).upper() if section_header else None
+
     section_matches = re.findall(
         r"\b(?:Section|Sec\.?)\s*[-:]?\s*([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
         chunk,
         flags=re.IGNORECASE,
     )
-    section_value = str(section_matches[-1]).upper() if section_matches else None
+    if section_value is None and section_matches:
+        section_value = str(section_matches[-1]).upper()
     if not section_value:
         heading_matches = re.findall(
             r"(?:^|\s)([0-9]{1,3}[A-Z]?)\s*[\.:]\s*(?:[A-Z][a-z]|[A-Z]{2,})",
@@ -358,7 +387,14 @@ def detect_reference(
     if section_value:
         metadata["section"] = section_value
     elif default_section:
-        metadata["section"] = default_section
+        # Avoid carrying section forward across semantic boundary markers.
+        semantic_boundary = re.search(
+            r"\b(punishment|definition|means|shall be punished)\b",
+            chunk,
+            flags=re.IGNORECASE,
+        )
+        if not semantic_boundary:
+            metadata["section"] = default_section
 
     return metadata
 
@@ -529,8 +565,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=1200,
-        help="Chunk size in characters (default: 1200)",
+        default=700,
+        help="Chunk size in characters (default: 700)",
     )
     parser.add_argument(
         "--overlap",
