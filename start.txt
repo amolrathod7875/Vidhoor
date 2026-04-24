@@ -1,10 +1,11 @@
 cd backend
-#start the docker chromadb command 
+# start ChromaDB
 docker compose -f docker-compose.chroma.yml up -d
 
-#ingestion of all the documents including data and data/Case
-python ingest_legal_resources.py --input-dir data --resource-category case --status active --ocr-fallback
+# re-ingest documents after retrieval/metadata prompt changes
+# use auto category detection and chunk size 700
+python ingest_legal_resources.py --input-dir data --resource-category auto --status active --ocr-fallback --chunk-size 700
 
-#uvicorn backend start engine 
+# start backend API
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 

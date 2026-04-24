@@ -564,6 +564,10 @@ class ChromaManager:
 
 		section_refs, article_refs = _extract_query_references(query_string)
 
+		# Force dependency retrieval so punishment sections include definition context.
+		if ("64" in section_refs or "65" in section_refs) and "63" not in section_refs:
+			section_refs.append("63")
+
 		vector_candidates = self._retrieve_vector_candidates(
 			query_string=query_string,
 			filter_status=filter_status,
