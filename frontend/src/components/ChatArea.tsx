@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from "react";
 import { Message } from "@/types/chat";
-import { Scale, Copy, Check, Pencil } from "lucide-react";
+import { Scale, Copy, Check, Pencil, RotateCcw } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
@@ -48,6 +48,7 @@ interface Props {
   isHistoryLoading: boolean;
   onChipClick?: (text: string) => void;
   onEditUserMessage?: (text: string) => void;
+  onRegenerateResponse?: () => void;
 }
 
 export function ChatArea({
@@ -56,6 +57,7 @@ export function ChatArea({
   isHistoryLoading,
   onChipClick,
   onEditUserMessage,
+  onRegenerateResponse,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -64,6 +66,9 @@ export function ChatArea({
 
   const activeSourcesMessage =
     messages.find((item) => item.id === activeSourcesMessageId) ?? null;
+  const latestAssistantMessageId = [...messages]
+    .reverse()
+    .find((item) => item.role === "assistant")?.id;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -208,6 +213,16 @@ export function ChatArea({
               {msg.role === "assistant" && (
                 <>
                   <div className="mt-2 flex justify-end gap-2">
+                    {onRegenerateResponse && msg.id === latestAssistantMessageId && (
+                      <button
+                        onClick={onRegenerateResponse}
+                        disabled={isTyping}
+                        className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Regenerate
+                      </button>
+                    )}
                     {msg.citations && msg.citations.length > 0 && (
                       <button
                         onClick={() => setActiveSourcesMessageId(msg.id)}

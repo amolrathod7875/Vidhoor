@@ -543,6 +543,72 @@ function ChatApp() {
     []
   );
 
+  const requestChatResponse = useCallback(
+    async (text: string, sessionId: string): Promise<string> => {
+      let sid = sessionId;
+
+      setIsTyping(true);
+      try {
+        const token = user ? await user.getIdToken() : null;
+        const response = await fetch(`${API_BASE_URL}/api/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            message: text,
+            session_id: sid,
+            is_temporary_chat: tempChat,
+            document_context: activeDocuments[0]?.contextText,
+            document_name: activeDocuments[0]?.name,
+            document_contexts: activeDocuments.map((doc) => doc.contextText),
+            document_names: activeDocuments.map((doc) => doc.name),
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Backend request failed with status ${response.status}`);
+        }
+
+        const data = (await response.json()) as ChatApiResponse;
+
+        if (data.session_id && data.session_id !== sid) {
+          setSessions((prev) =>
+            prev.map((session) =>
+              session.id === sid ? { ...session, id: data.session_id } : session
+            )
+          );
+          sid = data.session_id;
+          setActiveId(sid);
+        }
+
+        if (user && !tempChat) {
+          loadedHistorySessionIds.current.add(sid);
+        }
+
+        addMessage("assistant", data.response, sid, {
+          citations: data.citations ?? [],
+          overall_confidence: data.overall_confidence ?? null,
+          follow_ups: data.follow_ups ?? [],
+        });
+      } catch (error) {
+        console.error(error);
+        addMessage(
+          "assistant",
+          "I could not reach the Vidhoor backend right now. Please try again.",
+          sid
+        );
+        toast.error("Backend connection failed");
+      } finally {
+        setIsTyping(false);
+      }
+
+      return sid;
+    },
+    [activeDocuments, addMessage, tempChat, user]
+  );
+
   const handleSend = async (text: string) => {
     let sid = ensureActiveSession();
 
@@ -586,63 +652,51 @@ function ChatApp() {
       }
     }
 
-    // Typing indicator then backend response
-    setIsTyping(true);
-    try {
-      const token = user ? await user.getIdToken() : null;
-      const response = await fetch(`${API_BASE_URL}/api/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          message: text,
-          session_id: sid,
-          is_temporary_chat: tempChat,
-          document_context: activeDocuments[0]?.contextText,
-          document_name: activeDocuments[0]?.name,
-          document_contexts: activeDocuments.map((doc) => doc.contextText),
-          document_names: activeDocuments.map((doc) => doc.name),
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Backend request failed with status ${response.status}`);
-      }
-
-      const data = (await response.json()) as ChatApiResponse;
-
-      if (data.session_id && data.session_id !== sid) {
-        setSessions((prev) =>
-          prev.map((session) =>
-            session.id === sid ? { ...session, id: data.session_id } : session
-          )
-        );
-        sid = data.session_id;
-        setActiveId(sid);
-      }
-
-      if (user && !tempChat) {
-        loadedHistorySessionIds.current.add(sid);
-      }
-      addMessage("assistant", data.response, sid, {
-        citations: data.citations ?? [],
-        overall_confidence: data.overall_confidence ?? null,
-        follow_ups: data.follow_ups ?? [],
-      });
-    } catch (error) {
-      console.error(error);
-      addMessage(
-        "assistant",
-        "I could not reach the Vidhoor backend right now. Please try again.",
-        sid
-      );
-      toast.error("Backend connection failed");
-    } finally {
-      setIsTyping(false);
-    }
+    await requestChatResponse(text, sid);
   };
+
+  const handleRegenerateResponse = useCallback(async () => {
+    if (isTyping || !activeSession) {
+      return;
+    }
+
+    const assistantIndex = [...activeSession.messages]
+      .map((message, index) => ({ message, index }))
+      .reverse()
+      .find((entry) => entry.message.role === "assistant")?.index;
+
+    if (assistantIndex === undefined) {
+      toast.error("No assistant response available to regenerate");
+      return;
+    }
+
+    const userPrompt = activeSession.messages
+      .slice(0, assistantIndex)
+      .reverse()
+      .find((message) => message.role === "user")?.content;
+
+    if (!userPrompt) {
+      toast.error("Could not find the related user query");
+      return;
+    }
+
+    const targetAssistantMessageId = activeSession.messages[assistantIndex]?.id;
+
+    setSessions((prev) =>
+      prev.map((session) =>
+        session.id === activeSession.id
+          ? {
+              ...session,
+              messages: session.messages.filter(
+                (message) => message.id !== targetAssistantMessageId
+              ),
+            }
+          : session
+      )
+    );
+
+    await requestChatResponse(userPrompt, activeSession.id);
+  }, [activeSession, isTyping, requestChatResponse]);
 
   const handleEditUserMessage = (text: string) => {
     setComposerText(text);
@@ -1657,6 +1711,7 @@ function ChatApp() {
             isHistoryLoading={activeId !== null && loadingSessionId === activeId}
             onChipClick={handleSend}
             onEditUserMessage={handleEditUserMessage}
+            onRegenerateResponse={handleRegenerateResponse}
           />
 
           {/* Input */}
