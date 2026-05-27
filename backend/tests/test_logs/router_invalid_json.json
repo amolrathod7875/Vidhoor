@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-05-27T11:22:17.678102",
+  "input": "{not json",
+  "fallback": [
+    "Bharatiya Nyaya Sanhita"
+  ],
+  "output": [
+    "Bharatiya Nyaya Sanhita"
+  ],
+  "router_used": false
+}

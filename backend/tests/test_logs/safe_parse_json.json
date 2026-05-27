@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-05-27T11:22:17.685048",
+  "input": "Noise... {\"status\":\"insufficient\",\"clarifying_question\":\"Which Act?\"} ...",
+  "output": {
+    "status": "insufficient",
+    "clarifying_question": "Which Act?"
+  }
+}

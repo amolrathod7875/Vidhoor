@@ -1,0 +1,6 @@
+{
+  "timestamp": "2026-05-27T11:22:17.690799",
+  "input": "\"status\":\"insufficient\",\"clarifying_question\":\"Please specify the Act and section\"",
+  "status": "insufficient",
+  "clarify": "Please specify the Act and section\""
+}

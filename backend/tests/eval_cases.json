@@ -1,0 +1,44 @@
+[
+  {
+    "id": "bns_rape_section_64",
+    "query": "Explain BNS Section 64 on rape and its punishment.",
+    "expected_sections": ["64"],
+    "expected_act": "Bharatiya Nyaya Sanhita",
+    "expect_clarify": false
+  },
+  {
+    "id": "constitution_article_21",
+    "query": "Summarize Article 21 of the Constitution of India.",
+    "expected_sections": ["21"],
+    "expected_act": "Constitution of India",
+    "expect_clarify": false
+  },
+  {
+    "id": "bnss_bail",
+    "query": "What is the legal position on bail under BNSS Section 436?",
+    "expected_sections": ["436"],
+    "expected_act": "Bharatiya Nagarik Suraksha Sanhita",
+    "expect_clarify": false
+  },
+  {
+    "id": "it_act_66",
+    "query": "Explain IT Act Section 66 and the punishment.",
+    "expected_sections": ["66"],
+    "expected_act": "Information Technology Act, 2000",
+    "expect_clarify": false
+  },
+  {
+    "id": "bsa_evidence",
+    "query": "Explain evidence admissibility under the Bharatiya Sakshya Adhiniyam Section 63.",
+    "expected_sections": ["63"],
+    "expected_act": "Bharatiya Sakshya Adhiniyam",
+    "expect_clarify": false
+  },
+  {
+    "id": "rape_general",
+    "query": "Tell me about rape law in India.",
+    "expected_sections": [],
+    "expected_act": "",
+    "expect_clarify": true
+  }
+]
