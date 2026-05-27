@@ -66,6 +66,8 @@ class LLMEngine:
 			or os.environ.get("CEREBRAS_API_URL")
 			or "https://api.cerebras.ai/v1"
 		).strip()
+		self._apply_openai_compat_env()
+		self._log_llm_env_snapshot()
 		self._model_candidates = self._build_model_candidates(model)
 		self._active_model = self._model_candidates[0]
 
@@ -227,10 +229,22 @@ class LLMEngine:
 					kwargs["base_url"] = self._api_base
 				elif "api_base" in params:
 					kwargs["api_base"] = self._api_base
+				elif "api_url" in params:
+					kwargs["api_url"] = self._api_base
+				elif "openai_api_base" in params:
+					kwargs["openai_api_base"] = self._api_base
+
+				if "organization" in params:
+					kwargs["organization"] = None
 			except (ValueError, TypeError):
 				pass
 
-		return ChatCerebras(**kwargs)
+		llm = ChatCerebras(**kwargs)
+		client = getattr(llm, "client", None) or getattr(llm, "root_client", None)
+		client_base = getattr(client, "base_url", None)
+		logger.warning("ChatCerebras client base: %s", client_base)
+		logger.warning("ChatCerebras organization: %s", getattr(llm, "organization", None))
+		return llm
 
 	def _switch_model(self, model_name: str) -> None:
 		"""Switch active model and rebuild runnable chain."""
@@ -250,6 +264,31 @@ class LLMEngine:
 		env_path = Path(__file__).resolve().parent / ".env"
 		if env_path.exists():
 			load_dotenv(dotenv_path=env_path, override=False)
+
+	def _apply_openai_compat_env(self) -> None:
+		"""Apply OpenAI-compatible env settings for Cerebras clients."""
+		if self._api_base:
+			os.environ["OPENAI_API_BASE"] = self._api_base
+			os.environ["OPENAI_BASE_URL"] = self._api_base
+
+		existing_openai_key = os.environ.get("OPENAI_API_KEY")
+		if existing_openai_key and existing_openai_key != self._api_key:
+			logger.warning("OPENAI_API_KEY is set; using CEREBRAS_API_KEY for Cerebras calls")
+		os.environ["OPENAI_API_KEY"] = self._api_key
+
+		if os.environ.get("OPENAI_ORG_ID") or os.environ.get("OPENAI_ORGANIZATION"):
+			logger.warning("Clearing OpenAI org env vars for Cerebras calls")
+			os.environ.pop("OPENAI_ORG_ID", None)
+			os.environ.pop("OPENAI_ORGANIZATION", None)
+
+	def _log_llm_env_snapshot(self) -> None:
+		"""Log non-sensitive LLM env snapshot for debugging."""
+		key = str(self._api_key or "")
+		key_hint = f"{key[:6]}...{key[-4:]}" if len(key) > 10 else "<short>"
+		logger.warning("Cerebras API base resolved: %s", self._api_base)
+		logger.warning("OpenAI base env: %s", os.environ.get("OPENAI_BASE_URL"))
+		logger.warning("OpenAI api base env: %s", os.environ.get("OPENAI_API_BASE"))
+		logger.warning("Using API key hint: %s", key_hint)
 
 	@staticmethod
 	def _enforce_subheading_bullets(markdown_text: str) -> str:
