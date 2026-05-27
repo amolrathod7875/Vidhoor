@@ -567,6 +567,10 @@ def infer_act_filter(query: str) -> Optional[str]:
         return "Bharatiya Nyaya Sanhita"
     if re.search(r"\bbsa\b", normalized):
         return "Bharatiya Sakshya Adhiniyam"
+    if "information technology act" in normalized or re.search(r"\bit\s*act\b", normalized):
+        return "Information Technology Act, 2000"
+    if "it act 2000" in normalized:
+        return "Information Technology Act, 2000"
 
     if any(token in normalized for token in ("case law", "case", "judgment", "judgement", "precedent")):
         return "Indian Case Law"
@@ -594,6 +598,10 @@ def infer_act_filters(query: str) -> list[str | None]:
         filters.append("Bharatiya Nyaya Sanhita")
     if re.search(r"\bbsa\b", normalized):
         filters.append("Bharatiya Sakshya Adhiniyam")
+    if "information technology act" in normalized or re.search(r"\bit\s*act\b", normalized):
+        filters.append("Information Technology Act, 2000")
+    if "it act 2000" in normalized:
+        filters.append("Information Technology Act, 2000")
 
     if any(token in normalized for token in ("case law", "case", "judgment", "judgement", "precedent")):
         filters.append("Indian Case Law")
@@ -754,6 +762,63 @@ def _references_match(requested: str | None, candidate: str | None) -> bool:
     return False
 
 
+def _extract_section_refs_from_text(text: str | None) -> list[str]:
+    """Extract section reference tokens mentioned in snippet text."""
+    if not text:
+        return []
+
+    refs = re.findall(
+        r"\b(?:section|sec\.?)(?:\s*[-:]?\s*)([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
+        str(text),
+        flags=re.IGNORECASE,
+    )
+
+    heading_refs = re.findall(
+        r"(?:^|\s)([0-9]{1,3}[A-Z]?)\s*[\.\:\-–—\)]\s*[A-Za-z]",
+        str(text),
+        flags=re.IGNORECASE,
+    )
+
+    normalized: list[str] = []
+    for value in refs + heading_refs:
+        token = str(value).upper().strip()
+        if token and token not in normalized:
+            normalized.append(token)
+    return normalized
+
+
+def _citation_matches_requested_references(
+    citation: "Citation",
+    requested_references: list[str],
+) -> bool:
+    """Check whether a citation actually supports the requested references."""
+    if not requested_references:
+        return True
+
+    section_value = str(citation.section or "").strip()
+    if section_value and not any(
+        _references_match(requested, section_value)
+        for requested in requested_references
+    ):
+        return False
+
+    snippet_refs = _extract_section_refs_from_text(citation.snippet)
+
+    # If snippet explicitly mentions section(s), require a match to requested refs.
+    if snippet_refs:
+        return any(
+            _references_match(requested, snippet_ref)
+            for requested in requested_references
+            for snippet_ref in snippet_refs
+        )
+
+    # Otherwise fall back to metadata section match.
+    return any(
+        _references_match(requested, section_value)
+        for requested in requested_references
+    )
+
+
 def _reference_has_subsection(value: str | None) -> bool:
     """Check whether reference explicitly includes subsection notation like 303(2)."""
     if not value:
@@ -825,6 +890,8 @@ def _act_aliases(act_name: str) -> list[str]:
         return ["bharatiyanagariksurakshasanhita", "bnss"]
     if "bharatiyasakshyaadhiniyam" in normalized:
         return ["bharatiyasakshyaadhiniyam", "bsa"]
+    if "informationtechnologyact" in normalized:
+        return ["informationtechnologyact", "itact", "it", "itact2000", "informationtechnologyact2000"]
     if "constitutionofindia" in normalized:
         return ["constitutionofindia", "constitution"]
 
@@ -1424,6 +1491,17 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                         filter_act=act_filter,
                     )
 
+                    if (
+                        act_filter
+                        and not retrieval.get("documents")
+                        and not retrieval.get("citations")
+                    ):
+                        retrieval = chroma_manager.retrieve_context_with_metadata(
+                            query_string=retrieval_query,
+                            filter_status="active",
+                            filter_act=None,
+                        )
+
                     for context_chunk in retrieval.get("documents", []):
                         chunk_text = str(context_chunk or "")
                         chunk_key = chunk_text.strip().lower()
@@ -1451,13 +1529,18 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                 citations = citations[:8]
                 citations = _normalize_citation_links(citations, request)
 
+                retrieved_context: list[str] = []
+
                 requested_references = _extract_requested_references(masked_message)
 
                 has_direct_reference_match = True
                 if requested_references:
                     has_direct_reference_match = all(
                         any(
-                            _references_match(requested_reference, citation.section)
+                            _citation_matches_requested_references(
+                                citation,
+                                [requested_reference],
+                            )
                             for citation in citations
                         )
                         for requested_reference in requested_references
@@ -1467,23 +1550,11 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                     citations = [
                         citation
                         for citation in citations
-                        if any(
-                            _references_match(requested_reference, citation.section)
-                            for requested_reference in requested_references
+                        if _citation_matches_requested_references(
+                            citation,
+                            requested_references,
                         )
                     ]
-
-                retrieved_context = [
-                    _format_citation_context(item)
-                    for item in citations
-                    if item.snippet
-                ]
-
-                if citations:
-                    overall_confidence = round(
-                        sum(item.confidence for item in citations) / len(citations),
-                        2,
-                    )
 
                 if not retrieved_context:
                     if masked_document_context:
@@ -1510,6 +1581,18 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                         "Please verify the Act and section/article numbering, or refine the query."
                     )
                 else:
+                    retrieved_context = [
+                        _format_citation_context(item)
+                        for item in citations
+                        if item.snippet
+                    ]
+
+                    if citations:
+                        overall_confidence = round(
+                            sum(item.confidence for item in citations) / len(citations),
+                            2,
+                        )
+
                     legal_masked_query = masked_message
                     if masked_document_context:
                         legal_masked_query = (

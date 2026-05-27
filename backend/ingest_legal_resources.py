@@ -338,6 +338,8 @@ def infer_act_name(file_path: Path, explicit_act: str | None) -> str:
         return "Bharatiya Nyaya Sanhita"
     if "bsa" in name:
         return "Bharatiya Sakshya Adhiniyam"
+    if "it_act" in name or "it act" in name or "information technology" in name:
+        return "Information Technology Act, 2000"
 
     return file_path.stem.replace("_", " ").replace("-", " ").strip().title()
 

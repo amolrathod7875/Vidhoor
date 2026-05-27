@@ -5,6 +5,7 @@ This module handles context-grounded answer generation using ChatCerebras.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import re
@@ -60,6 +61,11 @@ class LLMEngine:
 			)
 
 		self._api_key = api_key
+		self._api_base = (
+			os.environ.get("CEREBRAS_API_BASE")
+			or os.environ.get("CEREBRAS_API_URL")
+			or "https://api.cerebras.ai/v1"
+		).strip()
 		self._model_candidates = self._build_model_candidates(model)
 		self._active_model = self._model_candidates[0]
 
@@ -209,7 +215,22 @@ class LLMEngine:
 	def _create_llm(self, model_name: str):
 		"""Create a ChatCerebras instance for the given model."""
 		ChatCerebras = _load_chat_cerebras()
-		return ChatCerebras(model=model_name, api_key=self._api_key)
+		kwargs: dict[str, Any] = {
+			"model": model_name,
+			"api_key": self._api_key,
+		}
+
+		if self._api_base:
+			try:
+				params = inspect.signature(ChatCerebras).parameters
+				if "base_url" in params:
+					kwargs["base_url"] = self._api_base
+				elif "api_base" in params:
+					kwargs["api_base"] = self._api_base
+			except (ValueError, TypeError):
+				pass
+
+		return ChatCerebras(**kwargs)
 
 	def _switch_model(self, model_name: str) -> None:
 		"""Switch active model and rebuild runnable chain."""
