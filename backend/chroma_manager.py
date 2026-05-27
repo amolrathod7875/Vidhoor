@@ -148,6 +148,30 @@ def _source_matches_act_filter(source: str, act_filter: str | None) -> bool:
 	return True
 
 
+def _looks_like_statute_source(value: str) -> bool:
+	"""Detect statute sources from filenames/titles when metadata is stale."""
+	normalized = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+	tokens = set(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+
+	short_aliases = {"bns", "bnss", "bsa", "ipc"}
+	if any(alias in tokens for alias in short_aliases):
+		return True
+
+	return any(
+		alias in normalized
+		for alias in (
+			"bharatiyanyayasanhita",
+			"bharatiyanagariksurakshasanhita",
+			"bharatiyasakshyaadhiniyam",
+			"constitutionofindia",
+			"constitution",
+			"informationtechnologyact",
+			"itact",
+			"itact2000",
+		)
+	)
+
+
 def _tokenize_for_bm25(text: str) -> list[str]:
 	"""Simple legal-text tokenizer for BM25 ranking."""
 	return re.findall(r"[a-z0-9]+", (text or "").lower())
@@ -224,6 +248,22 @@ def _extract_references_from_text(
 					break
 		if section_value is None and heading_candidates:
 			section_value = heading_candidates[-1]
+
+	if not section_value:
+		paren_heading_matches = re.findall(
+			r"(?:^|\s)([0-9]{1,3}[A-Z]?)\s*\.\s*\(",
+			text,
+			flags=re.IGNORECASE,
+		)
+		paren_candidates = [value.upper() for value in paren_heading_matches]
+		if preferred_section:
+			normalized_preferred_section = preferred_section.upper()
+			for candidate in paren_candidates:
+				if candidate == normalized_preferred_section:
+					section_value = candidate
+					break
+		if section_value is None and paren_candidates:
+			section_value = paren_candidates[-1]
 
 	return section_value, article_value
 
@@ -1029,6 +1069,17 @@ class ChromaManager:
 			hybrid_score += reference_bonus
 
 			doc_type = str(item.get("doc_type") or "").lower()
+			source_haystack = " ".join(
+				[
+					str(item.get("title") or ""),
+					str(item.get("source") or ""),
+					str(item.get("doc_id") or ""),
+				]
+			)
+			if doc_type == "case_law" and _looks_like_statute_source(source_haystack):
+				doc_type = "statute"
+				item["doc_type"] = "statute"
+
 			is_case_doc = doc_type == "case_law"
 			query_lower = (query_string or "").lower()
 			wants_precedent = any(

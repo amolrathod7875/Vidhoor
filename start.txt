@@ -9,3 +9,9 @@ python ingest_legal_resources.py --input-dir data --resource-category auto --sta
 # start backend API
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 
+#for test score : 
+python tests/run_eval.py --base-url http://127.0.0.1:8001 --timeout 180
+
+#for tests to perform 
+cd backend 
+pytest 

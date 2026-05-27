@@ -70,6 +70,7 @@ def build_metadata(
     status: str,
     source: str,
     source_url: str = "",
+    resource_type: str = "",
 ) -> list[dict[str, str]]:
     """Build metadata list for Chroma ingestion."""
     metadata: list[dict[str, str]] = []
@@ -80,6 +81,8 @@ def build_metadata(
             "act": "Constitution of India",
             "status": status,
             "source": source,
+            "doc_type": "statute",
+            "resource_type": resource_type,
         }
         if source_url:
             item["source_url"] = source_url
@@ -123,6 +126,7 @@ def ingest_constitution(
         status=status,
         source=str(input_path.name),
         source_url=build_source_url(input_path, source_base_url),
+        resource_type=input_path.suffix.lower().lstrip("."),
     )
 
     manager = ChromaManager(host=chroma_host, port=chroma_port)

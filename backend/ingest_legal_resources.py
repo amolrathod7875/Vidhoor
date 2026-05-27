@@ -34,11 +34,14 @@ def infer_resource_category(file_path: Path, explicit_category: str | None = Non
     if explicit_category and explicit_category != "auto":
         return explicit_category
 
+    lowered_name = file_path.stem.lower()
+    if any(keyword in lowered_name for keyword in ("constitution", "bnss", "bns", "bsa", "it_act", "it act", "information technology")):
+        return "statute"
+
     lowered_parts = [part.lower() for part in file_path.parts]
     if any(part in {"case", "cases", "judgments", "judgements"} for part in lowered_parts):
         return "case"
 
-    lowered_name = file_path.stem.lower()
     if any(keyword in lowered_name for keyword in ("v", "vs", "judgment", "judgement", "appeal")):
         return "case"
 

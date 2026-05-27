@@ -23,6 +23,7 @@ from firebase_admin import auth as firebase_auth, credentials as firebase_creden
 from chroma_manager import ChromaManager
 from database import OracleChatHistoryRepository
 from llm_engine import LLMEngine
+from agentic_rag import AgenticRagConfig, AgenticRagHelpers, AgenticRagRunner
 from pii_vault import PIIVault
 from services.draft_mailer import send_legal_draft_email
 from services.draft_exporter import render_draft_docx_bytes, render_draft_pdf_bytes
@@ -548,6 +549,37 @@ def get_ocr_service() -> VisionOCRService:
     return _ocr_service
 
 
+def _build_agentic_rag_runner(
+    llm_engine: LLMEngine,
+    chroma_manager: ChromaManager,
+) -> AgenticRagRunner:
+    """Create agentic RAG runner with environment-tuned settings."""
+    use_router_llm = os.getenv("AGENTIC_RAG_USE_ROUTER_LLM", "true").strip().lower() not in {"0", "false", "no"}
+    config = AgenticRagConfig(
+        max_expansions=int(os.getenv("AGENTIC_RAG_MAX_EXPANSIONS", "3") or "3"),
+        max_citations=int(os.getenv("AGENTIC_RAG_MAX_CITATIONS", "8") or "8"),
+        max_context_chunks=int(os.getenv("AGENTIC_RAG_MAX_CONTEXT_CHUNKS", "12") or "12"),
+        max_context_chars=int(os.getenv("AGENTIC_RAG_MAX_CONTEXT_CHARS", "12000") or "12000"),
+        max_router_chars=int(os.getenv("AGENTIC_RAG_MAX_ROUTER_CHARS", "1200") or "1200"),
+        use_router_llm=use_router_llm,
+    )
+    helpers = AgenticRagHelpers(
+        infer_act_filters=infer_act_filters,
+        extract_requested_references=_extract_requested_references,
+        citation_matches_allowed_acts=_citation_matches_allowed_acts,
+        citation_matches_requested_references=_citation_matches_requested_references,
+        format_citation_context=_format_citation_context,
+        normalize_citation_links=_normalize_citation_links,
+        citation_factory=lambda item: Citation(**item),
+    )
+    return AgenticRagRunner(
+        llm_engine=llm_engine,
+        chroma_manager=chroma_manager,
+        helpers=helpers,
+        config=config,
+    )
+
+
 def infer_act_filter(query: str) -> Optional[str]:
     """Infer likely legal source from query text for retrieval precision."""
     normalized = query.lower()
@@ -773,14 +805,26 @@ def _extract_section_refs_from_text(text: str | None) -> list[str]:
         flags=re.IGNORECASE,
     )
 
+    article_refs = re.findall(
+        r"\b(?:article|art\.?)(?:\s*[-:]?\s*)([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
+        str(text),
+        flags=re.IGNORECASE,
+    )
+
     heading_refs = re.findall(
         r"(?:^|\s)([0-9]{1,3}[A-Z]?)\s*[\.\:\-–—\)]\s*[A-Za-z]",
         str(text),
         flags=re.IGNORECASE,
     )
 
+    paren_heading_refs = re.findall(
+        r"(?:^|\s)([0-9]{1,3}[A-Z]?)\s*\.\s*\(",
+        str(text),
+        flags=re.IGNORECASE,
+    )
+
     normalized: list[str] = []
-    for value in refs + heading_refs:
+    for value in refs + article_refs + heading_refs + paren_heading_refs:
         token = str(value).upper().strip()
         if token and token not in normalized:
             normalized.append(token)
@@ -880,6 +924,31 @@ def _normalize_text_token(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
+def _looks_like_statute_source(citation: "Citation") -> bool:
+    """Detect statute sources even when metadata doc_type is incorrect."""
+    haystack = f"{citation.title} {citation.source} {citation.doc_id}"
+    normalized = _normalize_text_token(haystack)
+    token_haystack = set(re.findall(r"[a-z0-9]+", haystack.lower()))
+
+    short_aliases = {"bns", "bnss", "bsa", "ipc"}
+    if any(alias in token_haystack for alias in short_aliases):
+        return True
+
+    return any(
+        alias in normalized
+        for alias in (
+            "bharatiyanyayasanhita",
+            "bharatiyanagariksurakshasanhita",
+            "bharatiyasakshyaadhiniyam",
+            "constitutionofindia",
+            "constitution",
+            "informationtechnologyact",
+            "itact",
+            "itact2000",
+        )
+    )
+
+
 def _act_aliases(act_name: str) -> list[str]:
     """Return canonical aliases for known act names."""
     normalized = _normalize_text_token(act_name)
@@ -900,7 +969,8 @@ def _act_aliases(act_name: str) -> list[str]:
 
 def _citation_matches_allowed_acts(citation: Citation, act_filters: list[str | None]) -> bool:
     """Check whether citation appears to belong to one of requested act filters."""
-    if str(citation.doc_type or "").lower() == "case_law":
+    doc_type = str(citation.doc_type or "").lower()
+    if doc_type == "case_law" and not _looks_like_statute_source(citation):
         return True
 
     effective_filters = [item for item in act_filters if item]
@@ -1461,6 +1531,7 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
         session_id = chat_request.session_id or f"session_{uuid4().hex}"
         citations: list[Citation] = []
         overall_confidence: Optional[float] = None
+        skip_follow_ups = False
 
         if is_legal_query(masked_message):
             try:
@@ -1469,141 +1540,158 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                 if _bm25_refresh_counter % 5 == 0:
                     chroma_manager.refresh_bm25_from_oracle(filter_status="active", filter_act=None)
 
-                retrieval_query = masked_message
-                if masked_document_context:
-                    retrieval_query = (
-                        f"{masked_message}\n\n"
-                        "Document context (for grounding):\n"
-                        f"{masked_document_context[:3000]}"
+                use_agentic = os.getenv("ENABLE_AGENTIC_RAG", "true").strip().lower() not in {"0", "false", "no"}
+                if use_agentic:
+                    agentic_runner = _build_agentic_rag_runner(
+                        llm_engine=llm_engine,
+                        chroma_manager=chroma_manager,
                     )
-
-                act_filters = infer_act_filters(retrieval_query)
-
-                retrieved_context: list[str] = []
-                raw_citations: list[dict[str, Any]] = []
-                seen_context: set[str] = set()
-                seen_citations: set[tuple[str, str]] = set()
-
-                for act_filter in act_filters:
-                    retrieval = chroma_manager.retrieve_context_with_metadata(
-                        query_string=retrieval_query,
-                        filter_status="active",
-                        filter_act=act_filter,
+                    agentic_result = agentic_runner.run(
+                        masked_query=masked_message,
+                        masked_document_context=masked_document_context,
+                        request=request,
                     )
+                    ai_response_masked = agentic_result.response
+                    citations = agentic_result.citations
+                    overall_confidence = agentic_result.overall_confidence
+                    skip_follow_ups = agentic_result.clarifying_question is not None
+                else:
 
-                    if (
-                        act_filter
-                        and not retrieval.get("documents")
-                        and not retrieval.get("citations")
-                    ):
+                    retrieval_query = masked_message
+                    if masked_document_context:
+                        retrieval_query = (
+                            f"{masked_message}\n\n"
+                            "Document context (for grounding):\n"
+                            f"{masked_document_context[:3000]}"
+                        )
+
+                    act_filters = infer_act_filters(retrieval_query)
+
+                    retrieved_context: list[str] = []
+                    raw_citations: list[dict[str, Any]] = []
+                    seen_context: set[str] = set()
+                    seen_citations: set[tuple[str, str]] = set()
+
+                    for act_filter in act_filters:
                         retrieval = chroma_manager.retrieve_context_with_metadata(
                             query_string=retrieval_query,
                             filter_status="active",
-                            filter_act=None,
+                            filter_act=act_filter,
                         )
 
-                    for context_chunk in retrieval.get("documents", []):
-                        chunk_text = str(context_chunk or "")
-                        chunk_key = chunk_text.strip().lower()
-                        if not chunk_text or chunk_key in seen_context:
-                            continue
-                        seen_context.add(chunk_key)
-                        retrieved_context.append(chunk_text)
-
-                    for item in retrieval.get("citations", []):
-                        citation_doc_id = str(item.get("doc_id") or "")
-                        citation_snippet = str(item.get("snippet") or "")
-                        citation_key = (citation_doc_id, citation_snippet.strip().lower())
-                        if citation_key in seen_citations:
-                            continue
-                        seen_citations.add(citation_key)
-                        raw_citations.append(item)
-
-                citations = [Citation(**item) for item in raw_citations]
-                citations = [
-                    citation
-                    for citation in citations
-                    if _citation_matches_allowed_acts(citation, act_filters)
-                ]
-                citations.sort(key=lambda item: item.confidence, reverse=True)
-                citations = citations[:8]
-                citations = _normalize_citation_links(citations, request)
-
-                # retrieved_context already populated from Chroma results above
-
-                requested_references = _extract_requested_references(masked_message)
-
-                has_direct_reference_match = True
-                if requested_references:
-                    has_direct_reference_match = all(
-                        any(
-                            _citation_matches_requested_references(
-                                citation,
-                                [requested_reference],
+                        if (
+                            act_filter
+                            and not retrieval.get("documents")
+                            and not retrieval.get("citations")
+                        ):
+                            retrieval = chroma_manager.retrieve_context_with_metadata(
+                                query_string=retrieval_query,
+                                filter_status="active",
+                                filter_act=None,
                             )
-                            for citation in citations
-                        )
-                        for requested_reference in requested_references
-                    )
 
-                if requested_references and citations:
+                        for context_chunk in retrieval.get("documents", []):
+                            chunk_text = str(context_chunk or "")
+                            chunk_key = chunk_text.strip().lower()
+                            if not chunk_text or chunk_key in seen_context:
+                                continue
+                            seen_context.add(chunk_key)
+                            retrieved_context.append(chunk_text)
+
+                        for item in retrieval.get("citations", []):
+                            citation_doc_id = str(item.get("doc_id") or "")
+                            citation_snippet = str(item.get("snippet") or "")
+                            citation_key = (citation_doc_id, citation_snippet.strip().lower())
+                            if citation_key in seen_citations:
+                                continue
+                            seen_citations.add(citation_key)
+                            raw_citations.append(item)
+
+                    citations = [Citation(**item) for item in raw_citations]
                     citations = [
                         citation
                         for citation in citations
-                        if _citation_matches_requested_references(
-                            citation,
-                            requested_references,
-                        )
+                        if _citation_matches_allowed_acts(citation, act_filters)
                     ]
+                    citations.sort(key=lambda item: item.confidence, reverse=True)
+                    citations = citations[:8]
+                    citations = _normalize_citation_links(citations, request)
 
-                if not retrieved_context:
-                    if masked_document_context:
-                        citations = []
-                        overall_confidence = None
-                        ai_response_masked = _generate_document_grounded_response(
-                            llm_engine=llm_engine,
-                            masked_query=masked_message,
-                            masked_document_context=masked_document_context,
-                            document_name=document_label,
+                    # retrieved_context already populated from Chroma results above
+
+                    requested_references = _extract_requested_references(masked_message)
+
+                    has_direct_reference_match = True
+                    if requested_references:
+                        has_direct_reference_match = all(
+                            any(
+                                _citation_matches_requested_references(
+                                    citation,
+                                    [requested_reference],
+                                )
+                                for citation in citations
+                            )
+                            for requested_reference in requested_references
+                        )
+
+                    if requested_references and citations:
+                        citations = [
+                            citation
+                            for citation in citations
+                            if _citation_matches_requested_references(
+                                citation,
+                                requested_references,
+                            )
+                        ]
+
+                    if not retrieved_context:
+                        if masked_document_context:
+                            citations = []
+                            overall_confidence = None
+                            ai_response_masked = _generate_document_grounded_response(
+                                llm_engine=llm_engine,
+                                masked_query=masked_message,
+                                masked_document_context=masked_document_context,
+                                document_name=document_label,
+                            )
+                        else:
+                            citations = []
+                            overall_confidence = None
+                            ai_response_masked = (
+                                "I couldn't find sufficiently reliable legal sources for this query. "
+                                "Please include the exact Act and section/article reference, then try again."
+                            )
+                    elif requested_references and not has_direct_reference_match:
+                        requested_text = ", ".join(requested_references)
+                        ai_response_masked = (
+                            f"I could not find exact matches for the requested reference(s): {requested_text}. "
+                            "I cannot provide a citation-grounded answer without exact source matches. "
+                            "Please verify the Act and section/article numbering, or refine the query."
                         )
                     else:
-                        citations = []
-                        overall_confidence = None
-                        ai_response_masked = (
-                            "I couldn't find sufficiently reliable legal sources for this query. "
-                            "Please include the exact Act and section/article reference, then try again."
-                        )
-                elif requested_references and not has_direct_reference_match:
-                    requested_text = ", ".join(requested_references)
-                    ai_response_masked = (
-                        f"I could not find exact matches for the requested reference(s): {requested_text}. "
-                        "I cannot provide a citation-grounded answer without exact source matches. "
-                        "Please verify the Act and section/article numbering, or refine the query."
-                    )
-                else:
-                    retrieved_context = [
-                        _format_citation_context(item)
-                        for item in citations
-                        if item.snippet
-                    ]
+                        retrieved_context = [
+                            _format_citation_context(item)
+                            for item in citations
+                            if item.snippet
+                        ]
 
-                    if citations:
-                        overall_confidence = round(
-                            sum(item.confidence for item in citations) / len(citations),
-                            2,
-                        )
+                        if citations:
+                            overall_confidence = round(
+                                sum(item.confidence for item in citations) / len(citations),
+                                2,
+                            )
 
-                    legal_masked_query = masked_message
-                    if masked_document_context:
-                        legal_masked_query = (
-                            f"{masked_message}\n\n"
-                            "Document context from uploaded file:\n"
-                            f"{masked_document_context[:5000]}"
+                        legal_masked_query = masked_message
+                        if masked_document_context:
+                            legal_masked_query = (
+                                f"{masked_message}\n\n"
+                                "Document context from uploaded file:\n"
+                                f"{masked_document_context[:5000]}"
+                            )
+                        ai_response_masked = llm_engine.generate_legal_response(
+                            masked_query=legal_masked_query,
+                            retrieved_context_list=retrieved_context,
                         )
-                    ai_response_masked = llm_engine.generate_legal_response(
-                        masked_query=legal_masked_query,
-                        retrieved_context_list=retrieved_context,
-                    )
             except Exception as exc:
                 logger.exception("Legal retrieval failed: %s", exc)
                 ai_response_masked = (
@@ -1642,17 +1730,18 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                 logger.warning("Failed to fetch Indian Kanoon related links: %s", exc)
 
         follow_ups: list[str] = []
-        try:
-            follow_ups = llm_engine.generate_follow_up_questions(
-                user_query=chat_request.message,
-                assistant_answer=final_readable_response,
-                max_count=5,
-            )
-        except Exception as exc:
-            logger.warning("Failed to generate follow-up suggestions: %s", exc)
+        if not skip_follow_ups:
+            try:
+                follow_ups = llm_engine.generate_follow_up_questions(
+                    user_query=chat_request.message,
+                    assistant_answer=final_readable_response,
+                    max_count=5,
+                )
+            except Exception as exc:
+                logger.warning("Failed to generate follow-up suggestions: %s", exc)
 
-        if not follow_ups:
-            follow_ups = _fallback_follow_ups(chat_request.message, citations)
+            if not follow_ups:
+                follow_ups = _fallback_follow_ups(chat_request.message, citations)
         
         # Step 5: Save to Oracle DB (if NOT temporary and authenticated)
         if not chat_request.is_temporary_chat and user and user.get("uid"):
