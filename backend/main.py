@@ -1529,7 +1529,7 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                 citations = citations[:8]
                 citations = _normalize_citation_links(citations, request)
 
-                retrieved_context: list[str] = []
+                # retrieved_context already populated from Chroma results above
 
                 requested_references = _extract_requested_references(masked_message)
 
