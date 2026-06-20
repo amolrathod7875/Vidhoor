@@ -65,6 +65,10 @@ Frontend runs on `http://127.0.0.1:5173` by default and calls backend at `http:/
 - Backend details: see `backend/README.md`
 - Frontend details: see `frontend/README.md`
 
+## Architecture
+
+![Architecture Diagram](architecture%20diagram.png)
+
 ## Notes
 
 - Live Indian Kanoon links are appended at response time and are **not** stored in ChromaDB.
