@@ -520,7 +520,7 @@ def get_llm_engine() -> LLMEngine:
     """Get or create singleton LLM engine instance."""
     global _llm_engine
     if _llm_engine is None:
-        _llm_engine = LLMEngine(model="llama3.1-8b")
+        _llm_engine = LLMEngine(model="gpt-oss-120b")
     return _llm_engine
 
 

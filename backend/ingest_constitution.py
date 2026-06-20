@@ -129,7 +129,12 @@ def ingest_constitution(
         resource_type=input_path.suffix.lower().lstrip("."),
     )
 
-    manager = ChromaManager(host=chroma_host, port=chroma_port)
+    manager = ChromaManager(
+        host=chroma_host,
+        port=chroma_port,
+        preferred_embedding_model="all-MiniLM-L6-v2",
+        fallback_embedding_model="all-MiniLM-L6-v2",
+    )
     return manager.ingest_law(text_chunks=chunks, metadata_list=metadata)
 
 
