@@ -6,6 +6,7 @@ using a Chroma HTTP server and Oracle-backed hybrid retrieval (vector + BM25).
 
 from __future__ import annotations
 
+import grpc_stubs  # noqa: F401 — sets up DLL stubs for grpc/oracledb on restricted Windows
 import hashlib
 from importlib import import_module
 import json

@@ -1,3 +1,4 @@
+import grpc_stubs  # noqa: F401 — sets up DLL stubs for grpc/oracledb on restricted Windows
 from fastapi import FastAPI, HTTPException, Header, Depends, UploadFile, File, Form, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
