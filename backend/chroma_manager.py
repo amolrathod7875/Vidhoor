@@ -11,6 +11,7 @@ import hashlib
 from importlib import import_module
 import json
 import logging
+import os
 import re
 from typing import Any
 from uuid import uuid4
@@ -363,6 +364,7 @@ class ChromaManager:
 		self._bm25_index: Any = None
 		self._bm25_chunks: list[dict[str, Any]] = []
 		self._bm25_tokens: list[list[str]] = []
+		self.filter_status = os.environ.get("CHROMA_FILTER_STATUS", "active")
 
 		try:
 			self.client = chromadb.HttpClient(host=self.host, port=self.port)
@@ -417,6 +419,32 @@ class ChromaManager:
 			raise RuntimeError(
 				"Unable to initialize sentence-transformer embedding model"
 			) from exc
+
+	def check_embedding_dimension(self) -> dict[str, Any]:
+		"""Return expected vs stored embedding dimension for the collection."""
+		expected = None
+		try:
+			probe = self.embedding_function(["dimension probe"])
+			if probe is not None and len(probe) > 0:
+				expected = len(probe[0])
+		except Exception as exc:
+			logger.warning("Failed to determine embedding dimension: %s", exc)
+
+		stored = None
+		try:
+			sample = self.collection.get(limit=1, include=["embeddings"])
+			embeddings = sample.get("embeddings")
+			if embeddings is not None and len(embeddings) > 0:
+				stored = len(embeddings[0])
+		except Exception as exc:
+			logger.warning("Failed to inspect stored embedding dimension: %s", exc)
+
+		match = expected is not None and expected == stored
+		return {
+			"expected": expected,
+			"stored": stored,
+			"match": match,
+		}
 
 	def _initialize_bm25_repository(self) -> None:
 		"""Initialize Oracle chunk repository and warm BM25 index from persistent chunks."""
@@ -724,7 +752,16 @@ class ChromaManager:
 			if where_document is not None:
 				query_kwargs["where_document"] = where_document
 
-			result = self.collection.query(**query_kwargs)
+			try:
+				result = self.collection.query(**query_kwargs)
+			except Exception as exc:
+				logger.error(
+					"Chroma vector query failed for collection '%s' (filter=%s): %s",
+					self.collection_name,
+					where_filter,
+					exc,
+				)
+				continue
 
 			documents = result.get("documents", [[]])
 			metadatas = result.get("metadatas", [[]])

@@ -477,8 +477,6 @@ class AgenticRagRunner:
         citations: list[Any],
         act_filters: list[str | None],
     ) -> bool:
-        if any(act_filters):
-            return False
         if not self._is_statute_intent(masked_query):
             return False
         required_aliases = self._infer_required_statute_aliases(masked_query)

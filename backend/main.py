@@ -514,6 +514,34 @@ def get_chroma_manager() -> ChromaManager:
             preferred_embedding_model="all-MiniLM-L6-v2",
             fallback_embedding_model="all-MiniLM-L6-v2",
         )
+        try:
+            count = _chroma_manager.collection.count()
+            if count == 0:
+                logger.warning(
+                    "Chroma collection '%s' is empty at startup.",
+                    _chroma_manager.collection_name,
+                )
+            else:
+                logger.info(
+                    "Chroma collection '%s' has %d chunks.",
+                    _chroma_manager.collection_name,
+                    count,
+                )
+            dim_info = _chroma_manager.check_embedding_dimension()
+            if dim_info.get("expected") and dim_info.get("stored") and not dim_info.get("match"):
+                logger.warning(
+                    "Embedding dimension mismatch in collection '%s': expected %s, stored %s",
+                    _chroma_manager.collection_name,
+                    dim_info.get("expected"),
+                    dim_info.get("stored"),
+                )
+            elif dim_info.get("expected") and dim_info.get("stored"):
+                logger.info(
+                    "Embedding dimension OK: %d",
+                    dim_info.get("expected"),
+                )
+        except Exception as exc:
+            logger.warning("Chroma startup health check failed: %s", exc)
     return _chroma_manager
 
 
@@ -1458,7 +1486,22 @@ def _generate_document_grounded_response(
 
 @app.get("/")
 async def health_check():
-    return {"status": "Vidhoor Backend is live and waiting for legal queries."}
+    chroma_info = {"collection": "indian_law", "count": 0, "status": "unknown"}
+    try:
+        manager = get_chroma_manager()
+        chroma_info["count"] = manager.collection.count()
+        dim_info = manager.check_embedding_dimension()
+        chroma_info["embedding_dimension"] = dim_info
+        if dim_info.get("expected") and dim_info.get("stored") and not dim_info.get("match"):
+            chroma_info["status"] = "degraded: embedding dimension mismatch"
+        else:
+            chroma_info["status"] = "healthy"
+    except Exception as exc:
+        chroma_info["status"] = f"error: {exc}"
+    return {
+        "status": "Vidhoor Backend is live and waiting for legal queries.",
+        "chroma": chroma_info,
+    }
 
 
 @app.post("/api/feedback", response_model=FeedbackResponse)
