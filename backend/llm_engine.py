@@ -201,6 +201,31 @@ class LLMEngine:
 
 		self.follow_up_chain = self.follow_up_prompt | self.llm | StrOutputParser()
 
+		self.enhance_prompt = ChatPromptTemplate.from_messages(
+			[
+				(
+					"system",
+					(
+						"You are a prompt-engineering optimizer for an Indian legal LLM. "
+						"Rewrite the user's raw prompt into a structured, high-performance prompt. "
+						"Always include sections: ## Role, ## Context, ## Task, ## Constraints, ## Output Format. "
+						"For legal dialect: infer act/section if mentioned, require citations, forbid fabrication. "
+						"Return ONLY the enhanced markdown prompt, no preamble."
+					),
+				),
+				(
+					"human",
+					(
+						"Raw prompt:\n{raw_prompt}\n\n"
+						"Dialect: {dialect}\n\n"
+						"Rewrite the above into an optimized structured prompt following the required sections."
+					),
+				),
+			]
+		)
+
+		self.enhance_chain = self.enhance_prompt | self.llm | StrOutputParser()
+
 	@staticmethod
 	def _build_model_candidates(primary_model: str) -> list[str]:
 		"""Build a unique list of model aliases to try in order."""
@@ -254,6 +279,7 @@ class LLMEngine:
 		self.general_chain = self.general_prompt | self.llm | StrOutputParser()
 		self.title_chain = self.title_prompt | self.llm | StrOutputParser()
 		self.follow_up_chain = self.follow_up_prompt | self.llm | StrOutputParser()
+		self.enhance_chain = self.enhance_prompt | self.llm | StrOutputParser()
 		self._active_model = model_name
 
 	@staticmethod
@@ -510,6 +536,51 @@ class LLMEngine:
 
 		logger.exception("All configured Cerebras model aliases failed")
 		raise RuntimeError("Failed to generate general response") from last_error
+
+	def generate_enhanced_prompt(self, raw_prompt: str, dialect: str = "legal") -> str:
+		"""Rewrite a raw user prompt into a structured, optimized prompt.
+
+		Args:
+			raw_prompt: User's raw prompt text.
+			dialect: Prompt dialect/domain (defaults to "legal").
+
+		Returns:
+			Enhanced markdown prompt text.
+
+		Raises:
+			ValueError: If raw_prompt is empty.
+			RuntimeError: If LLM invocation fails.
+		"""
+		if not raw_prompt or not raw_prompt.strip():
+			raise ValueError("raw_prompt cannot be empty")
+
+		last_error: Exception | None = None
+		for model_name in self._model_candidates:
+			if model_name != self._active_model:
+				try:
+					self._switch_model(model_name)
+				except Exception as exc:
+					last_error = exc
+					continue
+
+			try:
+				return self.enhance_chain.invoke(
+					{
+						"raw_prompt": raw_prompt,
+						"dialect": dialect,
+					}
+				)
+			except Exception as exc:
+				last_error = exc
+				error_text = str(exc).lower()
+				if "model_not_found" in error_text or "does not exist" in error_text:
+					logger.warning("Model '%s' unavailable, trying fallback", model_name)
+					continue
+				logger.exception("Cerebras enhancement failed")
+				raise RuntimeError("Failed to enhance prompt") from exc
+
+		logger.exception("All configured Cerebras model aliases failed for enhancement")
+		raise RuntimeError("Failed to enhance prompt") from last_error
 
 	def generate_session_title(self, user_message: str, assistant_message: str) -> str:
 		"""Generate a concise session title from the first user/assistant turn."""

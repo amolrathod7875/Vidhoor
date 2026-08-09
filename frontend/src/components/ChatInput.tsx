@@ -1,5 +1,5 @@
-import { useRef, useState, KeyboardEvent, ChangeEvent } from "react";
-import { ArrowUp, FileText, ImageIcon, Paperclip, X } from "lucide-react";
+import { useRef, useState, useEffect, KeyboardEvent, ChangeEvent } from "react";
+import { ArrowUp, FileText, ImageIcon, Paperclip, X, Sparkles, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -28,6 +28,10 @@ interface Props {
   }>;
   onRemoveActiveDocument?: (id: string) => void;
   onOpenActiveDocument?: (id: string) => void;
+  onEnhance?: (text: string) => Promise<{ enhanced_prompt: string }>;
+  isEnhancing?: boolean;
+  enhanced?: { raw: string; enhanced: string } | null;
+  onRevert?: (raw: string) => void;
 }
 
 const MAX_ACTIVE_DOCUMENTS = 5;
@@ -45,12 +49,21 @@ export function ChatInput({
   activeDocuments = [],
   onRemoveActiveDocument,
   onOpenActiveDocument,
+  onEnhance,
+  isEnhancing = false,
+  enhanced = null,
+  onRevert,
 }: Props) {
   const [text, setText] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { user } = useAuth();
   const composerText = value ?? text;
   const setComposerText = onValueChange ?? setText;
+
+  const [isFlipping, setIsFlipping] = useState(false);
+  const [isHighlighting, setIsHighlighting] = useState(false);
+  const prevEnhancingRef = useRef(false);
+  const prevValueRef = useRef(value);
 
   const isBlocked = !user && disabled;
 
@@ -74,6 +87,19 @@ export function ChatInput({
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "e") {
+      e.preventDefault();
+      if (!composerText.trim() || isBlocked || isUploading || isEnhancing) return;
+      onEnhance?.(composerText);
+      return;
+    }
+
+    if (e.key === "Escape" && enhanced && onRevert) {
+      e.preventDefault();
+      onRevert(enhanced.raw);
+      return;
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -101,6 +127,33 @@ export function ChatInput({
     onUploadFiles(filesToUpload);
     event.target.value = "";
   };
+
+  const flipTimers: number[] = [];
+
+  // Trigger flip + highlight once enhancement completes and the text actually changed.
+  useEffect(() => {
+    if (isEnhancing) {
+      prevEnhancingRef.current = true;
+      prevValueRef.current = value;
+    } else if (prevEnhancingRef.current) {
+      prevEnhancingRef.current = false;
+      if (value !== prevValueRef.current) {
+        setIsFlipping(true);
+        const flipTimer = window.setTimeout(() => {
+          setIsFlipping(false);
+          setIsHighlighting(true);
+          const highlightTimer = window.setTimeout(() => setIsHighlighting(false), 900);
+          flipTimers.push(highlightTimer);
+        }, 520);
+        flipTimers.push(flipTimer);
+      }
+    }
+    return () => {
+      flipTimers.forEach((timer) => window.clearTimeout(timer));
+      flipTimers.length = 0;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEnhancing, value]);
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-4">
@@ -162,7 +215,8 @@ export function ChatInput({
       <div
         className={cn(
           "relative flex items-end rounded-2xl border border-border/50 bg-card shadow-sm transition-all duration-200 focus-within:border-primary/40 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/20",
-          isBlocked && "opacity-50"
+          isBlocked && "opacity-50",
+          isHighlighting && "enhance-highlight"
         )}
       >
         <input
@@ -205,24 +259,53 @@ export function ChatInput({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <TextareaAutosize
-          value={composerText}
-          onChange={(e) => setComposerText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={isBlocked || isUploading}
-          placeholder={
-            isBlocked
-              ? "Sign in to continue…"
-              : isUploading
-                ? "Processing uploaded document…"
-                : activeDocuments.length > 0
-                  ? "Ask questions about the uploaded documents…"
-                  : "Ask Vidhoor a legal question…"
-          }
-          minRows={1}
-          maxRows={5}
-          className="flex-1 resize-none bg-transparent px-4 py-3.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed"
-        />
+        <div
+          className={cn("min-w-0 flex-1", isFlipping && "enhance-flip")}
+          style={{ perspective: "1200px" }}
+        >
+          <TextareaAutosize
+            value={composerText}
+            onChange={(e) => setComposerText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={isBlocked || isUploading}
+            placeholder={
+              isBlocked
+                ? "Sign in to continue…"
+                : isUploading
+                  ? "Processing uploaded document…"
+                  : activeDocuments.length > 0
+                    ? "Ask questions about the uploaded documents…"
+                    : "Ask Vidhoor a legal question…"
+            }
+            minRows={1}
+            maxRows={5}
+            className="w-full resize-none bg-transparent px-4 py-3.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed"
+          />
+        </div>
+        <Button
+          type="button"
+          onClick={() => onEnhance?.(composerText)}
+          disabled={!composerText.trim() || isBlocked || isUploading || isEnhancing}
+          aria-label="Enhance prompt"
+          aria-busy={isEnhancing}
+          title="Enhance prompt (Ctrl/Cmd+E)"
+          className={cn(
+            "m-1.5 h-8 shrink-0 rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 px-4 text-xs font-medium text-white shadow-[0_0_12px_rgba(139,92,246,0.35)] transition-all hover:scale-[1.03] active:scale-95",
+            (!composerText.trim() || isBlocked || isUploading || isEnhancing) && "cursor-not-allowed opacity-50"
+          )}
+        >
+          {isEnhancing ? (
+            <>
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              Enhancing…
+            </>
+          ) : (
+            <>
+              <Sparkles className="mr-1 h-3.5 w-3.5" />
+              Enhance
+            </>
+          )}
+        </Button>
         <Button
           size="icon"
           onClick={handleSend}
@@ -231,7 +314,32 @@ export function ChatInput({
         >
           <ArrowUp className="h-4 w-4" />
         </Button>
+
+        {/* Shimmer overlay during enhancement (pointer-events-none) */}
+        {isEnhancing && (
+          <div
+            aria-hidden
+            className="enhance-shimmer pointer-events-none absolute inset-0 z-10 overflow-hidden rounded-2xl"
+          />
+        )}
       </div>
+
+      {/* Enhancement action bar */}
+      {enhanced && onRevert && (
+        <div className="mt-2 flex items-center justify-end gap-2">
+          <span className="text-[11px] text-muted-foreground">Prompt enhanced</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-[11px]"
+            onClick={() => onRevert(enhanced.raw)}
+            title="Restore original prompt (Esc)"
+          >
+            Revert
+          </Button>
+        </div>
+      )}
 
       {/* Disclaimer */}
       <p className="mt-2.5 text-center text-[11px] text-muted-foreground/60">

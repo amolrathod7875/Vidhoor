@@ -113,6 +113,59 @@
 }
 
 @keyframes typing-bounce {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-  40% { transform: scale(1); opacity: 1; }
+   0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+   40% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes shimmer {
+   0% { transform: translateX(-100%); }
+   100% { transform: translateX(100%); }
+}
+
+@keyframes flip-reveal {
+   0% { transform: rotateX(0deg) scale(1); }
+   50% { transform: rotateX(-90deg) scale(0.96); }
+   100% { transform: rotateX(0deg) scale(1); }
+}
+
+@keyframes fade-reveal {
+   0% { opacity: 0.4; }
+   100% { opacity: 1; }
+}
+
+@keyframes enhance-highlight {
+   0% { box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.4); }
+   100% { box-shadow: 0 0 0 2px rgba(52, 211, 153, 0); }
+}
+
+.enhance-shimmer {
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(255, 255, 255, 0.2),
+    transparent
+  );
+  animation: shimmer 1.4s linear infinite;
+}
+
+.enhance-flip {
+  transform-origin: center;
+  animation: flip-reveal 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.enhance-highlight {
+  animation: enhance-highlight 900ms ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enhance-shimmer {
+    animation: none;
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .enhance-flip {
+    animation: fade-reveal 150ms ease-out;
+  }
+  .enhance-highlight {
+    animation: fade-reveal 150ms ease-out forwards;
+  }
 }

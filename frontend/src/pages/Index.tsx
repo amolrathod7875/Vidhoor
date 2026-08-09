@@ -255,6 +255,8 @@ function ChatApp() {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [composerText, setComposerText] = useState("");
+  const [enhanced, setEnhanced] = useState<{ raw: string; enhanced: string } | null>(null);
+  const [isEnhancing, setIsEnhancing] = useState(false);
   const [connectedDocuments, setConnectedDocuments] = useState<ConnectedDocumentResponse[]>([]);
   const [showDraftTile, setShowDraftTile] = useState(true);
   const [draftEditorOpen, setDraftEditorOpen] = useState(false);
@@ -610,9 +612,10 @@ function ChatApp() {
   );
 
   const handleSend = async (text: string) => {
-    let sid = ensureActiveSession();
+    const sid = ensureActiveSession();
 
     addMessage("user", text, sid);
+    setEnhanced(null);
 
     if (draftFlow.step !== "idle") {
       if (draftFlow.sessionId !== sid) {
@@ -701,6 +704,68 @@ function ChatApp() {
   const handleEditUserMessage = (text: string) => {
     setComposerText(text);
   };
+
+  const handleComposerTextChange = useCallback((next: string) => {
+    // Editing the composer after an enhancement clears the enhanced state.
+    setEnhanced((prev) => {
+      if (prev && next !== prev.enhanced) {
+        return null;
+      }
+      return prev;
+    });
+    setComposerText(next);
+  }, []);
+
+  const handleEnhance = async (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed || isEnhancing) {
+      return { enhanced_prompt: raw };
+    }
+
+    setIsEnhancing(true);
+    let finalPrompt = trimmed;
+    try {
+      const token = user ? await user.getIdToken() : null;
+      const response = await fetch(`${API_BASE_URL}/api/prompt/enhance`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ raw_prompt: trimmed, dialect: "legal" }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Enhancement failed with status ${response.status}`);
+      }
+
+      const data = (await response.json()) as { enhanced_prompt: string };
+      const enhancedPrompt = (data.enhanced_prompt || "").trim() || trimmed;
+
+      if (enhancedPrompt === trimmed) {
+        // Backend returned the original (failure path / no-op) — keep raw.
+        setEnhanced({ raw: trimmed, enhanced: trimmed });
+        toast.info("Enhancement unavailable — using your original prompt");
+      } else {
+        finalPrompt = enhancedPrompt;
+        setEnhanced({ raw: trimmed, enhanced: enhancedPrompt });
+        setComposerText(enhancedPrompt);
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error("Enhancement failed — using your original prompt");
+      setEnhanced({ raw: trimmed, enhanced: trimmed });
+    } finally {
+      setIsEnhancing(false);
+    }
+
+    return { enhanced_prompt: finalPrompt };
+  };
+
+  const handleRevertEnhancement = useCallback((raw: string) => {
+    setComposerText(raw);
+    setEnhanced(null);
+  }, []);
 
   const buildSessionDraftFacts = useCallback((session: ChatSession | null): string => {
     if (!session || session.messages.length === 0) {
@@ -964,11 +1029,13 @@ function ChatApp() {
     setActiveId(null);
     setActiveDocuments([]);
     setComposerText("");
+    setEnhanced(null);
   };
 
   const handleSelectSession = async (id: string) => {
     setComposerText("");
     setActiveId(id);
+    setEnhanced(null);
     if (!tempChat) {
       await fetchSessionMessages(id);
       await fetchSessionDrafts(id);
@@ -1721,7 +1788,7 @@ function ChatApp() {
               onSend={handleSend}
               onUploadFiles={handleUploadFiles}
               value={composerText}
-              onValueChange={setComposerText}
+              onValueChange={handleComposerTextChange}
               onCreateDraft={() => {
                 void handleGenerateDraft();
               }}
@@ -1736,6 +1803,10 @@ function ChatApp() {
                 )
               }
               onOpenActiveDocument={handleOpenActiveDocument}
+              onEnhance={handleEnhance}
+              isEnhancing={isEnhancing}
+              enhanced={enhanced}
+              onRevert={handleRevertEnhancement}
             />
           </div>
         </div>

@@ -273,6 +273,16 @@ class FeedbackResponse(BaseModel):
     message: str
 
 
+class PromptEnhanceRequest(BaseModel):
+    raw_prompt: str = Field(min_length=1, max_length=4000)
+    dialect: str = "legal"
+
+
+class PromptEnhanceResponse(BaseModel):
+    enhanced_prompt: str
+    tokens_used: Optional[int] = None
+
+
 _chroma_manager: Optional[ChromaManager] = None
 _llm_engine: Optional[LLMEngine] = None
 _pii_vault: Optional[PIIVault] = None
@@ -1532,6 +1542,37 @@ async def submit_feedback(
         feedback_id=feedback_id,
         message="Report sent. Thank you!",
     )
+
+
+@app.post("/api/prompt/enhance", response_model=PromptEnhanceResponse)
+async def enhance_user_prompt(
+    request: PromptEnhanceRequest,
+    user: dict | None = Depends(verify_token),
+):
+    """Rewrite a raw user prompt into a structured, optimized prompt.
+
+    Guests and authenticated users are both allowed (same policy as /api/chat).
+    PII is masked before the LLM and restored afterwards. On failure the original
+    prompt is returned so the client never blocks sending.
+    """
+    raw_prompt = (request.raw_prompt or "").strip()
+    if not raw_prompt:
+        raise HTTPException(status_code=400, detail="raw_prompt cannot be empty")
+
+    pii_vault = get_pii_vault()
+    llm_engine = get_llm_engine()
+
+    masked, pii_map = pii_vault.mask_text(raw_prompt)
+
+    try:
+        enhanced_masked = llm_engine.generate_enhanced_prompt(masked, dialect=request.dialect)
+    except Exception as exc:
+        logger.exception("Prompt enhancement failed: %s", exc)
+        return PromptEnhanceResponse(enhanced_prompt=raw_prompt, tokens_used=None)
+
+    enhanced = pii_vault.unmask_text(enhanced_masked, pii_map)
+    return PromptEnhanceResponse(enhanced_prompt=enhanced, tokens_used=None)
+
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def process_chat(chat_request: ChatRequest, request: Request, user: dict = Depends(verify_token)):
