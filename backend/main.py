@@ -1701,29 +1701,6 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
 
                     requested_references = _extract_requested_references(masked_message)
 
-                    has_direct_reference_match = True
-                    if requested_references:
-                        has_direct_reference_match = all(
-                            any(
-                                _citation_matches_requested_references(
-                                    citation,
-                                    [requested_reference],
-                                )
-                                for citation in citations
-                            )
-                            for requested_reference in requested_references
-                        )
-
-                    if requested_references and citations:
-                        citations = [
-                            citation
-                            for citation in citations
-                            if _citation_matches_requested_references(
-                                citation,
-                                requested_references,
-                            )
-                        ]
-
                     if not retrieved_context:
                         if masked_document_context:
                             citations = []
@@ -1737,17 +1714,9 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                         else:
                             citations = []
                             overall_confidence = None
-                            ai_response_masked = (
-                                "I couldn't find sufficiently reliable legal sources for this query. "
-                                "Please include the exact Act and section/article reference, then try again."
+                            ai_response_masked = llm_engine.generate_general_response(
+                                masked_query=masked_message,
                             )
-                    elif requested_references and not has_direct_reference_match:
-                        requested_text = ", ".join(requested_references)
-                        ai_response_masked = (
-                            f"I could not find exact matches for the requested reference(s): {requested_text}. "
-                            "I cannot provide a citation-grounded answer without exact source matches. "
-                            "Please verify the Act and section/article numbering, or refine the query."
-                        )
                     else:
                         retrieved_context = [
                             _format_citation_context(item)

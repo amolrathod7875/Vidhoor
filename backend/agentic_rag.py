@@ -169,11 +169,12 @@ class AgenticRagRunner:
         )
 
         if retrieval["insufficient"]:
+            fallback_response = self._llm_engine.generate_general_response(masked_query)
             return AgenticRagResult(
-                response=retrieval["clarifying_question"],
-                citations=[],
+                response=fallback_response,
+                citations=retrieval["citations"],
                 overall_confidence=None,
-                clarifying_question=retrieval["clarifying_question"],
+                clarifying_question=None,
                 router_used=router_used,
             )
 
@@ -184,12 +185,23 @@ class AgenticRagRunner:
         )
 
         if judge_decision.status != "sufficient" or not judge_decision.final_answer:
-            clarifying = judge_decision.clarifying_question or retrieval["clarifying_question"]
+            if judge_decision.final_answer:
+                final_answer = self._normalize_answer(judge_decision.final_answer)
+            else:
+                try:
+                    final_answer = self._normalize_answer(
+                        self._llm_engine.generate_legal_response(
+                            masked_query=masked_query,
+                            retrieved_context_list=retrieval["context_blocks"],
+                        )
+                    )
+                except Exception:
+                    final_answer = self._llm_engine.generate_general_response(masked_query)
             return AgenticRagResult(
-                response=clarifying,
-                citations=[],
+                response=final_answer,
+                citations=retrieval["citations"],
                 overall_confidence=None,
-                clarifying_question=clarifying,
+                clarifying_question=None,
                 router_used=router_used,
             )
 
@@ -339,36 +351,15 @@ class AgenticRagRunner:
                 for citation in citations
                 if self._citation_matches_act_aliases(citation, explicit_act_aliases)
             ]
-            if not citations:
-                return {
-                    "insufficient": True,
-                    "clarifying_question": (
-                        "I could not find sources that match the requested Act. "
-                        "Please confirm the Act name and section/article reference."
-                    ),
-                    "requested_refs": requested_refs,
-                    "citations": [],
-                    "overall_confidence": None,
-                    "context_blocks": [],
-                }
 
         if requested_refs and citations:
             if not any(
                 self._helpers.citation_matches_requested_references(citation, requested_refs)
                 for citation in citations
             ):
-                requested_text = ", ".join(requested_refs)
-                return {
-                    "insufficient": True,
-                    "clarifying_question": (
-                        f"I could not find exact matches for the requested reference(s): {requested_text}. "
-                        "Please confirm the Act and section/article reference."
-                    ),
-                    "requested_refs": requested_refs,
-                    "citations": [],
-                    "overall_confidence": None,
-                    "context_blocks": [],
-                }
+                logger.debug(
+                    "No exact citation match for requested references; continuing with broader grounded context"
+                )
 
             citations = [
                 citation
@@ -389,10 +380,7 @@ class AgenticRagRunner:
         if not context_blocks:
             return {
                 "insufficient": True,
-                "clarifying_question": (
-                    "I could not find enough grounded legal sources for this query. "
-                    "Please share the exact Act and section/article reference."
-                ),
+                "clarifying_question": "",
                 "requested_refs": requested_refs,
                 "citations": [],
                 "overall_confidence": None,
@@ -501,9 +489,20 @@ class AgenticRagRunner:
         explicit_aliases = self._extract_explicit_act_aliases(masked_query)
         mentions_ref = self._query_mentions_reference(masked_query)
 
+        # Truly ambiguous: no act named AND no section/article reference.
         if not explicit_aliases and not mentions_ref:
             return True
 
+        # The user explicitly named an act and a section/article. The act is
+        # unambiguously identified, so never ask "Please specify the Act" -- even
+        # if retrieval returned no statute citation. Missing context is reported
+        # downstream by the grounding prompt, not by a wrong clarification.
+        if explicit_aliases and mentions_ref:
+            return False
+
+        # Keyword-inferred act (crime/bail/constitution/etc.) without an explicit
+        # alias, or an explicit act without a reference: require a matching
+        # statute citation before answering.
         target_aliases = explicit_aliases or required_aliases
 
         if target_aliases:

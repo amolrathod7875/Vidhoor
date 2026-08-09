@@ -153,10 +153,10 @@ def test_should_clarify_explicit_act_with_citation_returns_false() -> None:
     assert runner._should_clarify_general_query(query, citations, []) is False
 
 
-def test_should_clarify_explicit_act_without_citation_returns_true() -> None:
+def test_should_clarify_explicit_act_without_citation_returns_false() -> None:
     runner = _make_runner()
     query = "help me to understand BNS Section 34"
-    assert runner._should_clarify_general_query(query, [], []) is True
+    assert runner._should_clarify_general_query(query, [], []) is False
 
 
 def test_should_clarify_ambiguous_query_no_act_no_ref_returns_true() -> None:
@@ -176,10 +176,43 @@ def test_should_clarify_enhanced_style_query_with_bns_citation_returns_false() -
     assert runner._should_clarify_general_query(query, citations, []) is False
 
 
-def test_should_clarify_enhanced_style_query_without_citation_returns_true() -> None:
+def test_should_clarify_enhanced_style_query_without_citation_returns_false() -> None:
     runner = _make_runner()
     query = (
         "You are a legal analyst. BNS (Bharatiya Nyaya Sanhita) Section 34 deals with "
         "private defence. Identify and cite leading Indian case law."
     )
-    assert runner._should_clarify_general_query(query, [], []) is True
+    assert runner._should_clarify_general_query(query, [], []) is False
+
+
+def test_should_clarify_enhanced_prompt_bns_section_64_returns_false() -> None:
+    runner = _make_runner()
+    query = (
+        "Provide a detailed explanation of BNS (Bharatiya Nyaya Sanhita) Section 64, "
+        "citing only the statute text and relevant case law, and do not fabricate any citations."
+    )
+    assert runner._should_clarify_general_query(query, [], []) is False
+
+
+def test_run_uses_direct_fallback_when_retrieval_is_insufficient() -> None:
+    runner = _make_runner()
+    runner._llm_engine = SimpleNamespace(
+        generate_general_response=lambda query: "General fallback answer",
+    )
+    runner._route = lambda masked_query: (RouterDecision(act_filters=[None], expansions=[]), False)
+    runner._retrieve = lambda **kwargs: {
+        "insufficient": True,
+        "clarifying_question": "Please clarify",
+        "requested_refs": [],
+        "citations": [],
+        "overall_confidence": None,
+        "context_blocks": [],
+    }
+
+    result = runner.run(
+        masked_query="Explain BNS Section 64",
+        masked_document_context="",
+    )
+
+    assert result.response == "General fallback answer"
+    assert result.clarifying_question is None

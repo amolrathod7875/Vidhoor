@@ -206,21 +206,17 @@ class LLMEngine:
 				(
 					"system",
 					(
-						"You are a prompt-engineering optimizer for an Indian legal AI assistant. "
-						"Rewrite the user's raw request into one clear, natural-language instruction "
-						"that the legal assistant can answer directly. "
-						"Use plain English only. Do NOT use markdown formatting such as headings (##), "
-						"bold (**), bullet points, or numbered lists. "
-						"When the user mentions a statute (for example BNS, IPC, BNSS, BSA, Constitution, "
-						"IT Act) and a section or article, keep the EXACT abbreviation and number, and write "
-						"the full act name in parentheses the first time, for example "
-						"'BNS (Bharatiya Nyaya Sanhita) Section 64'. "
-						"Never replace the abbreviation with 'the Act' or leave the act name for later "
-						"identification. "
-						"Preserve the user's actual legal question and intent. "
-						"State that the answer must rely only on authentic legal sources (the statute text "
-						"and real case law) and must not fabricate citations. "
-						"Return ONLY the rewritten instruction, with no preamble or commentary."
+						"You rewrite the user's raw legal query into a concise, direct search/answer prompt. "
+						"Preserve the user's intent and keep the result as close to the original question as possible. "
+						"Do not add extra legal advice, explanations, disclaimers, headings, bullets, numbering, "
+						"or meta-instructions to another AI. "
+						"Do not ask the user for more information. "
+						"Use plain English only. "
+						"If the user mentions a statute (for example BNS, IPC, BNSS, BSA, Constitution, IT Act) "
+						"and a section or article, keep the exact abbreviation and number, and add the full act name "
+						"in parentheses the first time, for example 'BNS (Bharatiya Nyaya Sanhita) Section 64'. "
+						"If the input is already clear, return it with only minimal cleanup. "
+						"Return only the rewritten query."
 					),
 				),
 				(
@@ -574,12 +570,13 @@ class LLMEngine:
 					continue
 
 			try:
-				return self.enhance_chain.invoke(
+				raw_response = self.enhance_chain.invoke(
 					{
 						"raw_prompt": raw_prompt,
 						"dialect": dialect,
 					}
 				)
+				return self._sanitize_enhanced_prompt(str(raw_response), raw_prompt)
 			except Exception as exc:
 				last_error = exc
 				error_text = str(exc).lower()
@@ -591,6 +588,48 @@ class LLMEngine:
 
 		logger.exception("All configured Cerebras model aliases failed for enhancement")
 		raise RuntimeError("Failed to enhance prompt") from last_error
+
+	@staticmethod
+	def _sanitize_enhanced_prompt(enhanced_text: str, raw_prompt: str) -> str:
+		"""Collapse verbose enhancer output into a single query-shaped line."""
+		candidate = " ".join(str(enhanced_text or "").split()).strip()
+		if not candidate:
+			return " ".join(str(raw_prompt or "").split()).strip()
+
+		candidate = re.sub(
+			r"^(?:rewrite|rephrase|answer|explain|summarize|consider|provide|create|generate)\b[^:]*:\s*",
+			"",
+			candidate,
+			flags=re.IGNORECASE,
+		)
+		candidate = re.sub(
+			r"^(?:you are|as an ai|as a legal assistant)[^\.]*\.\s*",
+			"",
+			candidate,
+			flags=re.IGNORECASE,
+		)
+		candidate = re.sub(
+			r"\b(?:please\s+)?answer\s+in\s+markdown\b\.?\s*",
+			"",
+			candidate,
+			flags=re.IGNORECASE,
+		)
+		candidate = re.sub(
+			r"\breturn\s+only\b[^\.]*\.\s*",
+			"",
+			candidate,
+			flags=re.IGNORECASE,
+		)
+		candidate = re.sub(r"\b(do not|don't)\b.*?(?:\.|$)", "", candidate, flags=re.IGNORECASE)
+		candidate = candidate.strip(" \t\n\r\"'`")
+
+		if not candidate:
+			return " ".join(str(raw_prompt or "").split()).strip()
+
+		if len(candidate) > 800:
+			candidate = candidate[:800].rstrip()
+
+		return candidate
 
 	def generate_session_title(self, user_message: str, assistant_message: str) -> str:
 		"""Generate a concise session title from the first user/assistant turn."""
