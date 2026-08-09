@@ -146,6 +146,14 @@ class PIIVault:
 			"type",
 			"hero",
 			"splendor",
+			"security",
+			"code",
+			"authority",
+			"nigadi",
+			"flat",
+			"civil",
+			"suraksha",
+			"nagarik",
 		}
 
 		if re.fullmatch(r"(?:[A-Z]\.\s*){1,3}[A-Z][a-z]+", cleaned):
@@ -168,7 +176,7 @@ class PIIVault:
 			("IN_PAN", r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),
 			(
 				"PERSON",
-				r"\b(?:Mr|Ms|Mrs|Dr|Adv)\.?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b|\b[A-Z][a-z]+\s+[A-Z][a-z]+\b",
+				r"\b(?:Mr|Ms|Mrs|Dr|Adv)\.?[ \t]+[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){0,2}\b|\b[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2}\b",
 			),
 		]
 

@@ -1465,6 +1465,10 @@ def _generate_document_grounded_response(
         "Use only the provided document context when describing facts from the document. "
         "If the answer is not present in document context, explicitly say what is missing. "
         "When legal interpretation is requested, keep the answer practical and cautious.\n\n"
+        "The provided text may contain redaction placeholders of the form <TYPE_n> (e.g. <PERSON_1>, <PHONE_NUMBER_1>, <IN_AADHAAR_1>). "
+        "These are intentional and stand for the real values. Always copy any such placeholder token EXACTLY as written into your answer; "
+        "never replace it with 'redacted', 'not visible', 'unavailable', or any descriptive phrase. "
+        "Only state a field is missing if its placeholder is entirely absent from the source.\n\n"
         f"Document name: {document_label}\n\n"
         f"Document context:\n{context_snippet}\n\n"
         f"User question:\n{masked_query}\n\n"
@@ -1558,8 +1562,9 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
             document_context = "\n\n---\n\n".join(merged_blocks)[:16000]
 
         masked_document_context = ""
+        doc_pii_map: dict[str, str] = {}
         if document_context:
-            masked_document_context, _ = pii_vault.mask_text(document_context)
+            masked_document_context, doc_pii_map = pii_vault.mask_text(document_context)
 
         document_label = ", ".join(name for name, _ in document_pairs[:5]) if document_pairs else None
         session_id = chat_request.session_id or f"session_{uuid4().hex}"
@@ -1745,7 +1750,8 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
                     masked_query=masked_message,
                 )
         
-        final_readable_response = pii_vault.unmask_text(ai_response_masked, pii_map)
+        merged_pii_map = {**doc_pii_map, **pii_map}
+        final_readable_response = pii_vault.unmask_text(ai_response_masked, merged_pii_map)
 
         should_try_indian_kanoon = _should_fetch_indian_kanoon_links(chat_request.message)
         if should_try_indian_kanoon:
@@ -2157,6 +2163,10 @@ async def analyze_fir_document(
             "Summarize this FIR/scanned legal document in English with clear bullet points. "
             "Use ONLY facts explicitly visible in OCR text. If any field is unclear/noisy, say 'Not clearly visible in OCR'. "
             "Do not infer dates, years, FIR numbers, names, or legal sections from patterns.\n\n"
+            "The provided text may contain redaction placeholders of the form <TYPE_n> (e.g. <PERSON_1>, <PHONE_NUMBER_1>, <IN_AADHAAR_1>). "
+            "These are intentional and stand for the real values. Always copy any such placeholder token EXACTLY as written into your answer; "
+            "never replace it with 'redacted', 'not visible', 'unavailable', or any descriptive phrase. "
+            "Only state a field is missing if its placeholder is entirely absent from the source.\n\n"
             f"Document text:\n{masked_text[:20000]}"
         )
         summary_masked = llm_engine.generate_general_response(summary_prompt)
