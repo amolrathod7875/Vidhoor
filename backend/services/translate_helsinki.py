@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from langdetect import detect
 from transformers import MarianMTModel, MarianTokenizer
+
+logger = logging.getLogger(__name__)
 
 MODEL_BY_LANGUAGE: dict[str, str] = {
     "hi": "Helsinki-NLP/opus-mt-hi-en",
@@ -77,10 +80,14 @@ def _get_model(language: str) -> tuple[MarianTokenizer, MarianMTModel] | None:
     if cached:
         return cached
 
-    tokenizer = MarianTokenizer.from_pretrained(model_name)
-    model = MarianMTModel.from_pretrained(model_name)
-    _model_cache[model_name] = (tokenizer, model)
-    return tokenizer, model
+    try:
+        tokenizer = MarianTokenizer.from_pretrained(model_name)
+        model = MarianMTModel.from_pretrained(model_name)
+        _model_cache[model_name] = (tokenizer, model)
+        return tokenizer, model
+    except Exception as exc:
+        logger.warning("Failed to load Helsinki translation model '%s': %s", model_name, exc)
+        return None
 
 
 def detect_language(text: str) -> str:

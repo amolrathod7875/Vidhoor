@@ -2140,6 +2140,16 @@ async def analyze_fir_document(
         if not pages:
             raise HTTPException(status_code=422, detail="No readable text found in uploaded document.")
 
+        garbage_pages = [
+            item for item in pages
+            if VisionOCRService._looks_like_garbage(str(item.get("text") or ""))
+        ]
+        if garbage_pages:
+            raise HTTPException(
+                status_code=422,
+                detail="Document scanned in an unsupported script or quality. Please upload a clearer document or a text-based PDF.",
+            )
+
         translated_pages = translate_pages_to_english(pages)
         compiled_text = "\n\n".join(
             f"[Page {item['page']}]\n{item['text_en']}"

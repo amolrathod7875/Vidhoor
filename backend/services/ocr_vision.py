@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import logging
 import os
+import tempfile
 import time
+from importlib import import_module
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import requests
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_OCR_SPACE_ENDPOINT = "https://api.ocr.space/parse/image"
-DEFAULT_LANGUAGE = "eng"
-DEFAULT_OCR_ENGINE = 1
+DEFAULT_LANGUAGE = "auto"
+DEFAULT_OCR_ENGINE = 3
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY_SECONDS = 2
@@ -40,142 +45,128 @@ class VisionOCRService:
         )
 
     def _request_ocr(self, file_path: Path) -> dict[str, Any]:
-        attempts = max(1, int(self.max_retries))
-        last_error: Exception | None = None
-
-        for attempt in range(1, attempts + 1):
-            try:
-                with file_path.open("rb") as file_stream:
-                    files = {
-                        "filename": (file_path.name, file_stream),
-                    }
-                    data = {
-                        "language": self.language,
-                        "isOverlayRequired": "false",
-                        "OCREngine": str(self.ocr_engine),
-                        "detectOrientation": "true",
-                        "scale": "true",
-                    }
-                    headers = {
-                        "apikey": self.api_key,
-                    }
-
-                    response = requests.post(
-                        self.endpoint,
-                        headers=headers,
-                        data=data,
-                        files=files,
-                        timeout=self.timeout_seconds,
-                    )
-            except requests.RequestException as exc:
-                last_error = exc
-                if attempt < attempts:
-                    time.sleep(self.retry_delay_seconds)
-                    continue
-                raise RuntimeError(f"OCR.space request failed: {exc}") from exc
-
-            if response.status_code != 200:
-                message = f"OCR.space request failed with status {response.status_code}: {response.text}"
-                if response.status_code >= 500 and attempt < attempts:
-                    time.sleep(self.retry_delay_seconds)
-                    continue
-                raise RuntimeError(message)
-
-            try:
-                payload = response.json()
-            except ValueError as exc:
-                last_error = exc
-                if attempt < attempts:
-                    time.sleep(self.retry_delay_seconds)
-                    continue
-                raise RuntimeError("OCR.space returned non-JSON response.") from exc
-
-            if payload.get("IsErroredOnProcessing"):
-                message = payload.get("ErrorMessage") or payload.get("ErrorDetails") or "OCR.space processing failed."
-                if isinstance(message, list):
-                    message = "; ".join(str(item) for item in message)
-                message_text = str(message)
-                is_transient = any(
-                    token in message_text.lower()
-                    for token in ["timeout", "try again", "tempor", "overload", "busy"]
-                )
-                if is_transient and attempt < attempts:
-                    time.sleep(self.retry_delay_seconds)
-                    continue
-                raise RuntimeError(f"OCR.space error: {message_text}")
-
-            return payload
-
-        raise RuntimeError(f"OCR.space request failed after retries: {last_error}")
+        return self._request_ocr_with_fallback(
+            file_opener=lambda: file_path.open("rb"),
+            filename=file_path.name,
+        )
 
     def _request_ocr_from_bytes(self, filename: str, file_bytes: bytes) -> dict[str, Any]:
+        return self._request_ocr_with_fallback(
+            file_opener=lambda: BytesIO(file_bytes),
+            filename=filename,
+        )
+
+    def _request_ocr_with_fallback(
+        self,
+        file_opener,
+        filename: str,
+    ) -> dict[str, Any]:
         attempts = max(1, int(self.max_retries))
         last_error: Exception | None = None
 
-        for attempt in range(1, attempts + 1):
-            try:
-                buffer = BytesIO(file_bytes)
-                files = {
-                    "filename": (filename, buffer),
-                }
-                data = {
-                    "language": self.language,
-                    "isOverlayRequired": "false",
-                    "OCREngine": str(self.ocr_engine),
-                    "detectOrientation": "true",
-                    "scale": "true",
-                }
-                headers = {
-                    "apikey": self.api_key,
-                }
+        configs = [
+            (self.ocr_engine, self.language),
+            (1, "eng"),
+        ]
 
-                response = requests.post(
-                    self.endpoint,
-                    headers=headers,
-                    data=data,
-                    files=files,
-                    timeout=self.timeout_seconds,
-                )
-            except requests.RequestException as exc:
-                last_error = exc
+        for engine, language in configs:
+            for attempt in range(1, attempts + 1):
+                try:
+                    with file_opener() as file_stream:
+                        files = {
+                            "filename": (filename, file_stream),
+                        }
+                        data = {
+                            "language": language,
+                            "isOverlayRequired": "false",
+                            "OCREngine": str(engine),
+                            "detectOrientation": "true",
+                            "scale": "true",
+                        }
+                        headers = {
+                            "apikey": self.api_key,
+                        }
+
+                        response = requests.post(
+                            self.endpoint,
+                            headers=headers,
+                            data=data,
+                            files=files,
+                            timeout=self.timeout_seconds,
+                        )
+                except requests.RequestException as exc:
+                    last_error = exc
+                    if attempt < attempts:
+                        time.sleep(self.retry_delay_seconds)
+                        continue
+                    if engine == 1:
+                        raise RuntimeError(f"OCR.space request failed: {exc}") from exc
+                    break
+
+                if response.status_code != 200:
+                    message = f"OCR.space request failed with status {response.status_code}: {response.text}"
+                    if response.status_code >= 500 and attempt < attempts:
+                        time.sleep(self.retry_delay_seconds)
+                        continue
+                    if engine == 1:
+                        raise RuntimeError(message)
+                    break
+
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    last_error = exc
+                    if attempt < attempts:
+                        time.sleep(self.retry_delay_seconds)
+                        continue
+                    if engine == 1:
+                        raise RuntimeError("OCR.space returned non-JSON response.") from exc
+                    break
+
+                if payload.get("IsErroredOnProcessing"):
+                    message = payload.get("ErrorMessage") or payload.get("ErrorDetails") or "OCR.space processing failed."
+                    if isinstance(message, list):
+                        message = "; ".join(str(item) for item in message)
+                    message_text = str(message)
+                    is_transient = any(
+                        token in message_text.lower()
+                        for token in ["timeout", "try again", "tempor", "overload", "busy"]
+                    )
+                    if is_transient and attempt < attempts:
+                        time.sleep(self.retry_delay_seconds)
+                        continue
+                    if engine == 1:
+                        raise RuntimeError(f"OCR.space error: {message_text}")
+                    break
+
+                parsed = self._parse_pages(payload)
+                if parsed:
+                    logger.warning("OCR succeeded with engine=%s language=%s", engine, language)
+                    return payload
+
                 if attempt < attempts:
                     time.sleep(self.retry_delay_seconds)
                     continue
-                raise RuntimeError(f"OCR.space request failed: {exc}") from exc
+                break
 
-            if response.status_code != 200:
-                message = f"OCR.space request failed with status {response.status_code}: {response.text}"
-                if response.status_code >= 500 and attempt < attempts:
-                    time.sleep(self.retry_delay_seconds)
-                    continue
-                raise RuntimeError(message)
-
-            try:
-                payload = response.json()
-            except ValueError as exc:
-                last_error = exc
-                if attempt < attempts:
-                    time.sleep(self.retry_delay_seconds)
-                    continue
-                raise RuntimeError("OCR.space returned non-JSON response.") from exc
-
-            if payload.get("IsErroredOnProcessing"):
-                message = payload.get("ErrorMessage") or payload.get("ErrorDetails") or "OCR.space processing failed."
-                if isinstance(message, list):
-                    message = "; ".join(str(item) for item in message)
-                message_text = str(message)
-                is_transient = any(
-                    token in message_text.lower()
-                    for token in ["timeout", "try again", "tempor", "overload", "busy"]
-                )
-                if is_transient and attempt < attempts:
-                    time.sleep(self.retry_delay_seconds)
-                    continue
-                raise RuntimeError(f"OCR.space error: {message_text}")
-
-            return payload
+            if engine == 1:
+                raise RuntimeError("OCR.space returned empty ParsedResults after retries.")
+            logger.warning("OCR engine=%s language=%s returned empty ParsedResults; trying fallback", engine, language)
 
         raise RuntimeError(f"OCR.space request failed after retries: {last_error}")
+
+    @staticmethod
+    def _looks_like_garbage(text: str, min_words: int = 5, max_noise_ratio: float = 0.55) -> bool:
+        if not text or not text.strip():
+            return True
+
+        words = text.split()
+        if len(words) < min_words:
+            return True
+
+        alnum_count = sum(1 for char in text if char.isalnum())
+        noise_ratio = 1.0 - (alnum_count / max(len(text), 1))
+        return noise_ratio > max_noise_ratio
 
     @staticmethod
     def _parse_pages(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -184,6 +175,17 @@ class VisionOCRService:
 
         for page_index, item in enumerate(parsed_results, start=1):
             text = str(item.get("ParsedText") or "").strip()
+            exit_code = item.get("FileParseExitCode")
+            error_message = item.get("ErrorMessage")
+
+            if exit_code is not None and str(exit_code) != "0" and str(exit_code) != "":
+                logger.warning(
+                    "OCR page %d returned non-zero exit code %s: %s",
+                    page_index,
+                    exit_code,
+                    error_message or "no detail",
+                )
+
             if not text:
                 continue
 
@@ -194,9 +196,57 @@ class VisionOCRService:
             elif isinstance(raw_page, str) and raw_page.isdigit():
                 page_number = int(raw_page)
 
-            output.append({"page": page_number, "text": text})
+            page_dict: dict[str, Any] = {"page": page_number, "text": text}
+            if exit_code is not None:
+                page_dict["parse_exit_code"] = exit_code
+            if error_message:
+                page_dict["parse_error_message"] = error_message
+
+            output.append(page_dict)
 
         return output
+
+    @staticmethod
+    def _read_pages_via_pagewise_ocr(file_path: Path) -> list[dict[str, Any]]:
+        try:
+            pypdf_module = import_module("pypdf")
+            PdfReader = getattr(pypdf_module, "PdfReader")
+            PdfWriter = getattr(pypdf_module, "PdfWriter")
+        except Exception as exc:
+            raise RuntimeError("pypdf is required for page-wise OCR fallback") from exc
+
+        reader = PdfReader(str(file_path))
+        aggregated_pages: list[dict[str, Any]] = []
+        service = VisionOCRService()
+
+        for page_index, page in enumerate(reader.pages, start=1):
+            writer = PdfWriter()
+            writer.add_page(page)
+
+            temp_fd, temp_path_raw = tempfile.mkstemp(suffix=f"_page_{page_index}.pdf")
+            os.close(temp_fd)
+            try:
+                with Path(temp_path_raw).open("wb") as temp_pdf:
+                    writer.write(temp_pdf)
+                page_results = service.extract_pages(str(temp_path_raw))
+            except Exception:
+                continue
+            finally:
+                try:
+                    Path(temp_path_raw).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            page_text = "\n".join(
+                str(item.get("text") or "").strip()
+                for item in page_results
+                if str(item.get("text") or "").strip()
+            ).strip()
+
+            if page_text:
+                aggregated_pages.append({"page": page_index, "text": page_text})
+
+        return aggregated_pages
 
     def extract_pages(self, file_path: str) -> list[dict[str, Any]]:
         """Extract OCR text page-wise from an uploaded image/PDF."""
@@ -206,8 +256,20 @@ class VisionOCRService:
         if extension not in {".png", ".jpg", ".jpeg", ".webp", ".tiff", ".bmp", ".pdf"}:
             raise ValueError("Unsupported file type. Upload PDF, PNG, JPG, JPEG, WEBP, TIFF, or BMP.")
 
-        payload = self._request_ocr(path)
-        return self._parse_pages(payload)
+        try:
+            payload = self._request_ocr(path)
+            pages = self._parse_pages(payload)
+        except RuntimeError as exc:
+            error_text = str(exc).lower()
+            if extension == ".pdf" and "exceeds the maximum permissible file size" in error_text:
+                pages = self._read_pages_via_pagewise_ocr(path)
+            else:
+                raise
+
+        if not pages and extension == ".pdf":
+            pages = self._read_pages_via_pagewise_ocr(path)
+
+        return pages
 
     def extract_pages_from_bytes(self, filename: str, file_bytes: bytes) -> list[dict[str, Any]]:
         """Extract OCR text page-wise from uploaded image/PDF bytes."""
@@ -215,6 +277,19 @@ class VisionOCRService:
 
         if extension not in {".png", ".jpg", ".jpeg", ".webp", ".tiff", ".bmp", ".pdf"}:
             raise ValueError("Unsupported file type. Upload PDF, PNG, JPG, JPEG, WEBP, TIFF, or BMP.")
+
+        if extension == ".pdf":
+            temp_fd, temp_path = tempfile.mkstemp(suffix=".pdf")
+            os.close(temp_fd)
+            try:
+                with Path(temp_path).open("wb") as temp_file:
+                    temp_file.write(file_bytes)
+                return self.extract_pages(temp_path)
+            finally:
+                try:
+                    Path(temp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         payload = self._request_ocr_from_bytes(filename=filename, file_bytes=file_bytes)
         return self._parse_pages(payload)
