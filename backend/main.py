@@ -2484,5 +2484,6 @@ async def get_shared_session(share_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to fetch shared session: {exc}")
 
 if __name__ == "__main__":
-    # Run the server on port 8000
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    host = os.getenv("BACKEND_HOST", "0.0.0.0")
+    port = int(os.getenv("BACKEND_PORT", "8001"))
+    uvicorn.run(app, host=host, port=port)

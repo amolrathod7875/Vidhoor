@@ -28,6 +28,8 @@ docker compose -f docker-compose.chroma.yml up -d
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
+> **Windows VPN note:** If you see `WinError 10013`, your VPN/endpoint-security agent is blocking the loopback bind. Workaround: use `BACKEND_HOST=0.0.0.0` and/or change `BACKEND_PORT` (e.g. `9000`). Update the frontend `VITE_API_BASE_URL` to match.
+
 ### 2) Frontend
 
 ```bash
@@ -42,8 +44,10 @@ Frontend runs on `http://127.0.0.1:5173` by default and calls backend at `http:/
 
 ### Backend core
 - `CEREBRAS_API_KEY`
-- `CHROMA_HOST` (default `127.0.0.1`)
+- `CHROMA_HOST` (default `127.0.0.1`; use `chroma` only inside Docker Compose)
 - `CHROMA_PORT` (default `8000`)
+- `BACKEND_HOST` (default `0.0.0.0`)
+- `BACKEND_PORT` (default `8001`)
 - `APP_PUBLIC_BASE_URL`
 - `LEGAL_SOURCE_BASE_URL`
 

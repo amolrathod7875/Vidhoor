@@ -65,6 +65,8 @@ python ingest_legal_resources.py --input-dir data --resource-category auto --sta
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
+> **Windows VPN note:** If you see `WinError 10013`, your VPN/endpoint-security agent is blocking the loopback bind. Workaround: use `BACKEND_HOST=0.0.0.0` and/or change `BACKEND_PORT` (e.g. `9000`).
+
 ## Key API Endpoints
 
 - `GET /` — health check
@@ -86,8 +88,10 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ### Core
 
 - `CEREBRAS_API_KEY`
-- `CHROMA_HOST` (default `127.0.0.1`)
+- `CHROMA_HOST` (default `127.0.0.1`; use `chroma` only inside Docker Compose)
 - `CHROMA_PORT` (default `8000`)
+- `BACKEND_HOST` (default `0.0.0.0`)
+- `BACKEND_PORT` (default `8001`)
 
 ### Oracle
 

@@ -7,11 +7,13 @@ docker compose -f docker-compose.chroma.yml up -d
 python ingest_legal_resources.py --input-dir data --resource-category auto --status active --ocr-fallback --chunk-size 700
 
 # start backend API
+# If you get WinError 10013 (VPN / loopback bind blocked), use BACKEND_HOST=0.0.0.0 and/or change BACKEND_PORT:
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
+# Example alternate: python -m uvicorn main:app --host 0.0.0.0 --port 9000 --reload
 
-#for test score : 
+# for test score :
 python tests/run_eval.py --base-url http://127.0.0.1:8001 --timeout 180
 
-#for tests to perform 
+# for tests to perform 
 cd backend 
 pytest 
