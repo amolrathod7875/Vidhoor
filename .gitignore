@@ -3,3 +3,4 @@ plans/
 .venv/
 .idea/
 .vscode/
+.pytest_cache/

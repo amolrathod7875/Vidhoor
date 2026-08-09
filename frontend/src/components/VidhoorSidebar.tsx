@@ -97,6 +97,11 @@ export function VidhoorSidebar({
   const [editValue, setEditValue] = useState("");
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState("");
+  const visibleDocuments = connectedDocuments.filter((doc) => {
+    const p = doc.relative_path.toLowerCase();
+    if (p.startsWith("ocr_text/") || p.startsWith("ocr_tmp/")) return false;
+    return /\.(pdf|docx?|pptx?|xlsx?)$/i.test(doc.file_name);
+  });
   const [allowFollowUp, setAllowFollowUp] = useState(false);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
@@ -502,10 +507,10 @@ export function VidhoorSidebar({
               Connected Documents
             </DropdownMenuLabel>
             <div className="max-h-44 overflow-y-auto rounded-lg border border-border/50 bg-muted/20 p-1.5">
-              {connectedDocuments.length === 0 ? (
+              {visibleDocuments.length === 0 ? (
                 <p className="px-2 py-1 text-xs text-muted-foreground">No documents found.</p>
               ) : (
-                connectedDocuments.map((doc) => (
+                visibleDocuments.map((doc) => (
                   <button
                     key={doc.relative_path}
                     type="button"
