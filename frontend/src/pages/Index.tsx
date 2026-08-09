@@ -795,6 +795,7 @@ function ChatApp() {
 
         addMessage("assistant", assistantContent, sessionId);
         await fetchSessionDrafts(sessionId);
+        await fetchSessionMessages(sessionId);
         setDraftFlow({ step: "idle" });
         toast.success("Draft created");
       } catch (error) {

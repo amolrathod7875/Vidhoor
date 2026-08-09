@@ -1879,6 +1879,20 @@ async def generate_legal_draft(
     )
 
     if request.session_id:
+        session_title = None
+        try:
+            existing = chat_repo.get_session_messages(
+                user_id=user_id,
+                session_id=request.session_id,
+            )
+            if not existing:
+                session_title = llm_engine.generate_session_title(
+                    user_message=f"Generate legal draft: {APPLICATION_TYPE_LABELS.get(application_type, 'Legal Draft')}",
+                    assistant_message=f"### {title}\n\n{draft_content}",
+                )
+        except Exception:
+            session_title = None
+
         try:
             chat_repo.save_chat_turn(
                 user_id=user_id,
@@ -1886,7 +1900,7 @@ async def generate_legal_draft(
                 user_message=f"Generate legal draft: {APPLICATION_TYPE_LABELS.get(application_type, 'Legal Draft')}",
                 assistant_message=f"### {title}\n\n{draft_content}\n\n> {DRAFT_DISCLAIMER}",
                 masked_entities={},
-                session_title=None,
+                session_title=session_title,
             )
         except Exception as exc:
             logger.exception("Failed to append generated draft into chat history: %s", exc)
@@ -2247,6 +2261,20 @@ async def analyze_fir_document(
         ]
 
         if not is_temporary_chat and user and user.get("uid") and session_id:
+            session_title = None
+            try:
+                existing = get_chat_repo().get_session_messages(
+                    user_id=str(user["uid"]),
+                    session_id=session_id,
+                )
+                if not existing:
+                    session_title = llm_engine.generate_session_title(
+                        user_message=f"Uploaded document: {filename}",
+                        assistant_message=summary,
+                    )
+            except Exception:
+                session_title = None
+
             try:
                 chat_repo = get_chat_repo()
                 chat_repo.save_chat_turn(
@@ -2257,6 +2285,7 @@ async def analyze_fir_document(
                     masked_entities=pii_map,
                     assistant_citations=[item.model_dump() for item in citations],
                     assistant_overall_confidence=overall_confidence,
+                    session_title=session_title,
                 )
             except Exception as exc:
                 logger.exception("Failed to persist upload chat history: %s", exc)
