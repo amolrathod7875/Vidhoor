@@ -1310,9 +1310,30 @@ class OracleChunkRepository:
 							"act": str(act or ""),
 							"source": str(source or ""),
 							"section_ref": str(section_ref or ""),
-							"metadata": meta,
-							"last_updated": _iso(updated_at),
-						}
-					)
+					"metadata": meta,
+						"last_updated": _iso(updated_at),
+					}
+				)
 
 		return chunks
+
+
+_chat_repo = None
+
+
+def get_chat_repo():
+    """Return a chat history repository, preferring Oracle when configured, else SQLite."""
+    global _chat_repo
+    if _chat_repo is not None:
+        return _chat_repo
+
+    user = os.environ.get("ORACLE_USER")
+    password = os.environ.get("ORACLE_PASSWORD")
+    dsn = os.environ.get("ORACLE_DSN")
+    if user and password and dsn:
+        _chat_repo = OracleChatHistoryRepository()
+    else:
+        from sqlite_chat_repo import SQLiteChatHistoryRepository
+        _chat_repo = SQLiteChatHistoryRepository()
+    _chat_repo.initialize_schema()
+    return _chat_repo

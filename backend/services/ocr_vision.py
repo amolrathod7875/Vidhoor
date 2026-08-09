@@ -179,12 +179,13 @@ class VisionOCRService:
             error_message = item.get("ErrorMessage")
 
             if exit_code is not None and str(exit_code) != "0" and str(exit_code) != "":
-                logger.warning(
-                    "OCR page %d returned non-zero exit code %s: %s",
-                    page_index,
-                    exit_code,
-                    error_message or "no detail",
-                )
+                if not text:
+                    logger.warning(
+                        "OCR page %d returned non-zero exit code %s: %s",
+                        page_index,
+                        exit_code,
+                        error_message or "no detail",
+                    )
 
             if not text:
                 continue

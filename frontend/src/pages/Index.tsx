@@ -936,12 +936,12 @@ function ChatApp() {
             : "🔐 Encrypted evidence generated client-side.",
         ].join("\n");
 
-        if (!user || tempChat) {
-          addMessage("assistant", assistantContent, sid, {
-            citations: data.citations ?? [],
-            overall_confidence: data.overall_confidence ?? null,
-          });
-        } else {
+        addMessage("assistant", assistantContent, sid, {
+          citations: data.citations ?? [],
+          overall_confidence: data.overall_confidence ?? null,
+        });
+
+        if (user && !tempChat) {
           await fetchSessionMessages(sid);
         }
       }

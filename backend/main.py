@@ -22,7 +22,7 @@ import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials as firebase_credentials
 
 from chroma_manager import ChromaManager
-from database import OracleChatHistoryRepository
+from database import get_chat_repo
 from llm_engine import LLMEngine
 from agentic_rag import AgenticRagConfig, AgenticRagHelpers, AgenticRagRunner
 from pii_vault import PIIVault
@@ -276,7 +276,6 @@ class FeedbackResponse(BaseModel):
 _chroma_manager: Optional[ChromaManager] = None
 _llm_engine: Optional[LLMEngine] = None
 _pii_vault: Optional[PIIVault] = None
-_chat_repo: Optional[OracleChatHistoryRepository] = None
 _ocr_service: Optional[VisionOCRService] = None
 _bm25_refresh_counter: int = 0
 _firebase_auth_initialized: bool = False
@@ -559,15 +558,6 @@ def get_pii_vault() -> PIIVault:
     if _pii_vault is None:
         _pii_vault = PIIVault()
     return _pii_vault
-
-
-def get_chat_repo() -> OracleChatHistoryRepository:
-    """Get or create singleton Oracle chat-history repository."""
-    global _chat_repo
-    if _chat_repo is None:
-        _chat_repo = OracleChatHistoryRepository()
-        _chat_repo.initialize_schema()
-    return _chat_repo
 
 
 def get_ocr_service() -> VisionOCRService:
@@ -2150,7 +2140,8 @@ async def analyze_fir_document(
                 detail="Document scanned in an unsupported script or quality. Please upload a clearer document or a text-based PDF.",
             )
 
-        translated_pages = translate_pages_to_english(pages)
+        llm_engine = get_llm_engine()
+        translated_pages = translate_pages_to_english(pages, llm_engine=llm_engine)
         compiled_text = "\n\n".join(
             f"[Page {item['page']}]\n{item['text_en']}"
             for item in translated_pages
@@ -2160,7 +2151,6 @@ async def analyze_fir_document(
             raise HTTPException(status_code=422, detail="Unable to translate OCR text to usable content.")
 
         pii_vault = get_pii_vault()
-        llm_engine = get_llm_engine()
         masked_text, pii_map = pii_vault.mask_text(compiled_text)
 
         summary_prompt = (
