@@ -265,6 +265,10 @@ class AgenticRagRunner:
 
         query_variants.extend(router_decision.expansions)
 
+        focus_query = self._build_focus_query(masked_query)
+        if focus_query:
+            query_variants.append(focus_query)
+
         raw_citations: list[dict[str, Any]] = []
         retrieved_context: list[str] = []
         seen_context: set[str] = set()
@@ -453,6 +457,19 @@ class AgenticRagRunner:
             expansions.append(f"section {ref}")
         return self._dedupe_expansions(expansions)
 
+    def _build_focus_query(self, masked_query: str) -> str:
+        act_filters = self._helpers.infer_act_filters(masked_query)
+        refs = self._helpers.extract_requested_references(masked_query)
+        parts: list[str] = []
+        for act in act_filters:
+            if act:
+                parts.append(act)
+        parts.extend(refs)
+        if not parts:
+            return ""
+        parts.append("meaning explanation punishment ingredients")
+        return " ".join(parts)
+
     def _dedupe_expansions(self, expansions: list[str]) -> list[str]:
         results: list[str] = []
         seen: set[str] = set()
@@ -479,15 +496,22 @@ class AgenticRagRunner:
     ) -> bool:
         if not self._is_statute_intent(masked_query):
             return False
+
         required_aliases = self._infer_required_statute_aliases(masked_query)
-        if required_aliases:
-            explicit_aliases = self._extract_explicit_act_aliases(masked_query)
-            if not explicit_aliases and not self._query_mentions_reference(masked_query):
-                return True
+        explicit_aliases = self._extract_explicit_act_aliases(masked_query)
+        mentions_ref = self._query_mentions_reference(masked_query)
+
+        if not explicit_aliases and not mentions_ref:
+            return True
+
+        target_aliases = explicit_aliases or required_aliases
+
+        if target_aliases:
             return not any(
-                self._citation_matches_act_aliases(citation, required_aliases)
+                self._citation_matches_act_aliases(citation, target_aliases)
                 for citation in citations
             )
+
         return not any(self._looks_like_statute_citation(citation) for citation in citations)
 
     def _parse_router_output(

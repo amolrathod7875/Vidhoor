@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -127,3 +128,58 @@ def test_extract_non_json_fields_clarifying_question() -> None:
     )
     assert decision.status == "insufficient"
     assert decision.clarifying_question
+
+
+def _make_citation(
+    title: str = "",
+    source: str = "",
+    doc_id: str = "",
+    doc_type: str = "",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        title=title,
+        source=source,
+        doc_id=doc_id,
+        doc_type=doc_type,
+        confidence=0.9,
+        snippet="",
+    )
+
+
+def test_should_clarify_explicit_act_with_citation_returns_false() -> None:
+    runner = _make_runner()
+    query = "help me to understand BNS Section 34"
+    citations = [_make_citation(title="BNS Section 34", doc_type="statute")]
+    assert runner._should_clarify_general_query(query, citations, []) is False
+
+
+def test_should_clarify_explicit_act_without_citation_returns_true() -> None:
+    runner = _make_runner()
+    query = "help me to understand BNS Section 34"
+    assert runner._should_clarify_general_query(query, [], []) is True
+
+
+def test_should_clarify_ambiguous_query_no_act_no_ref_returns_true() -> None:
+    runner = _make_runner()
+    query = "tell me about law"
+    assert runner._should_clarify_general_query(query, [], []) is True
+
+
+def test_should_clarify_enhanced_style_query_with_bns_citation_returns_false() -> None:
+    runner = _make_runner()
+    query = (
+        "You are a legal analyst. BNS (Bharatiya Nyaya Sanhita) Section 34 deals with "
+        "private defence. Identify and cite leading Indian case law. "
+        "Interpretation & Case Law: provide meaning, explanation, punishment, ingredients."
+    )
+    citations = [_make_citation(title="BNS Section 34", doc_type="statute")]
+    assert runner._should_clarify_general_query(query, citations, []) is False
+
+
+def test_should_clarify_enhanced_style_query_without_citation_returns_true() -> None:
+    runner = _make_runner()
+    query = (
+        "You are a legal analyst. BNS (Bharatiya Nyaya Sanhita) Section 34 deals with "
+        "private defence. Identify and cite leading Indian case law."
+    )
+    assert runner._should_clarify_general_query(query, [], []) is True
