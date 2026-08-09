@@ -216,8 +216,10 @@ export function ChatInput({
         className={cn(
           "relative flex items-end rounded-2xl border border-border/50 bg-card shadow-sm transition-all duration-200 focus-within:border-primary/40 focus-within:shadow-md focus-within:ring-1 focus-within:ring-primary/20",
           isBlocked && "opacity-50",
-          isHighlighting && "enhance-highlight"
+          isHighlighting && "enhance-highlight",
+          isFlipping && "overflow-hidden"
         )}
+        style={{ perspective: "1200px" }}
       >
         <input
           ref={fileInputRef}
@@ -261,7 +263,6 @@ export function ChatInput({
         </DropdownMenu>
         <div
           className={cn("min-w-0 flex-1", isFlipping && "enhance-flip")}
-          style={{ perspective: "1200px" }}
         >
           <TextareaAutosize
             value={composerText}
@@ -290,7 +291,7 @@ export function ChatInput({
           aria-busy={isEnhancing}
           title="Enhance prompt (Ctrl/Cmd+E)"
           className={cn(
-            "m-1.5 h-8 shrink-0 rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 px-4 text-xs font-medium text-white shadow-[0_0_12px_rgba(139,92,246,0.35)] transition-all hover:scale-[1.03] active:scale-95",
+            "m-1.5 h-8 shrink-0 rounded-full bg-gradient-to-r from-[hsl(217_91%_52%)] to-[hsl(217_91%_40%)] px-4 text-xs font-medium text-white shadow-[0_0_12px_hsl(217_91%_52%/0.35)] transition-all hover:scale-[1.03] active:scale-95 dark:from-[hsl(24_95%_53%)] dark:to-[hsl(24_95%_40%)] dark:shadow-[0_0_12px_hsl(24_95%_53%/0.35)]",
             (!composerText.trim() || isBlocked || isUploading || isEnhancing) && "cursor-not-allowed opacity-50"
           )}
         >

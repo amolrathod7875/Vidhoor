@@ -151,6 +151,10 @@
 .enhance-flip {
   transform-origin: center;
   animation: flip-reveal 520ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+  backface-visibility: hidden;
+  max-width: 100%;
+  contain: paint;
 }
 
 .enhance-highlight {
