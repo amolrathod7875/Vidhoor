@@ -9,12 +9,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import logging
+
 import oracledb
 
 try:
 	oracledb.defaults.fetch_lobs = False
 except Exception:
 	pass
+
+logger = logging.getLogger(__name__)
 
 
 class OracleChatHistoryRepository:
@@ -1331,8 +1335,28 @@ def get_chat_repo():
     password = os.environ.get("ORACLE_PASSWORD")
     dsn = os.environ.get("ORACLE_DSN")
     if user and password and dsn:
+        logger.info(
+            "Chat history repository: Oracle Autonomous DB (user=%s, dsn=%s)",
+            user,
+            dsn,
+        )
         _chat_repo = OracleChatHistoryRepository()
     else:
+        missing = [
+            name
+            for name, val in (
+                ("ORACLE_USER", user),
+                ("ORACLE_PASSWORD", password),
+                ("ORACLE_DSN", dsn),
+            )
+            if not val
+        ]
+        logger.warning(
+            "Chat history repository: SQLite FALLBACK (missing Oracle env: %s). "
+            "History will NOT persist across container restarts/deploys. "
+            "Set ORACLE_USER, ORACLE_PASSWORD, ORACLE_DSN (+ wallet) to use Oracle.",
+            ", ".join(missing),
+        )
         from sqlite_chat_repo import SQLiteChatHistoryRepository
         _chat_repo = SQLiteChatHistoryRepository()
     _chat_repo.initialize_schema()

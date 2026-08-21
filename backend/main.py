@@ -1488,6 +1488,19 @@ def _generate_document_grounded_response(
 
 # --- Core API Endpoints ---
 
+@app.on_event("startup")
+async def _log_active_chat_repo() -> None:
+    """Surface which chat-history backend is active so deploy issues are visible."""
+    try:
+        repo = get_chat_repo()
+        logger.info(
+            "Active chat-history repository at startup: %s",
+            type(repo).__name__,
+        )
+    except Exception as exc:  # pragma: no cover - best-effort diagnostics
+        logger.warning("Could not initialize chat-history repository at startup: %s", exc)
+
+
 @app.get("/")
 async def health_check():
     chroma_info = {"collection": "indian_law", "count": 0, "status": "unknown"}
