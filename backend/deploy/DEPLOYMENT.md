@@ -108,3 +108,9 @@ If the security list allows ingress on `80`, open `http://<VM_IP>/` in a browser
 - Chroma data persists in the Docker volume `chroma_data`.
 - Image is built for `linux/arm64` (A1 shape). If you ever use an x86 shape
   (`VM.Standard.E2.1.Micro`), rebuild natively on that VM (no cross-arch needed).
+
+## Production
+- Backend is deployed at `http://130.210.10.231/` (nginx `:80` → backend `:8000`).
+- Frontend (Vercel) rewrites `/api` and `/legal` to this VM IP (see `frontend/vercel.json`).
+- Legal documents are ingested once into Chroma (persistent volume); re-run
+  `ingest_legal_resources.py` only to refresh the corpus.
