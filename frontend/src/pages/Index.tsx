@@ -341,8 +341,13 @@ function ChatApp() {
           pinned: item.pinned,
         }));
 
-        if (mappedSessions.length > 0) {
-          setSessions(sortSessions(mappedSessions));
+        setSessions(sortSessions(mappedSessions));
+
+        // Auto-restore the most recent session after a refresh so the
+        // conversation reappears without the user having to click it.
+        if (mappedSessions.length > 0 && !activeId) {
+          const mostRecent = sortSessions(mappedSessions)[0];
+          setActiveId(mostRecent.id);
         }
       } catch (error) {
         console.error(error);
@@ -482,6 +487,14 @@ function ChatApp() {
     },
     [user]
   );
+
+  // Load a session's messages whenever the active session changes (covers both
+  // manual selection and the auto-restore-after-refresh path above).
+  useEffect(() => {
+    if (activeId && user && !tempChat) {
+      void fetchSessionMessages(activeId);
+    }
+  }, [activeId, user, tempChat, fetchSessionMessages]);
 
   const fetchSessionDrafts = useCallback(
     async (sessionId: string) => {
