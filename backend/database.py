@@ -1331,6 +1331,11 @@ def get_chat_repo():
     if _chat_repo is not None:
         return _chat_repo
 
+    # Ensure .env is loaded before we inspect ORACLE_* (dotenv is normally only
+    # loaded later inside the repository __init__, which would otherwise cause a
+    # false SQLite fallback when the process relies on .env rather than env_file).
+    _load_environment()
+
     user = os.environ.get("ORACLE_USER")
     password = os.environ.get("ORACLE_PASSWORD")
     dsn = os.environ.get("ORACLE_DSN")
