@@ -1,17 +1,17 @@
-__pycache__/
-*.py[cod]
-*.log
 .env
-.venv/
-venv/
-.pytest_cache/
-.mypy_cache/
+.env.example
+wallet/
+data/
+chroma/
 .git/
 .gitignore
-
-# local/runtime state
-chroma/
-
-# secrets
-wallet/
-vidhoor-239930f200a8.json
+__pycache__/
+*.pyc
+.venv/
+.kilo/
+plans/
+tests/
+*.log
+node_modules/
+*firebase*admin*.json
+vidhoor-*-firebase-*.json

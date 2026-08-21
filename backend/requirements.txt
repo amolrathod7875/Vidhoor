@@ -4,7 +4,7 @@ pydantic==2.6.1
 langchain>=0.2.0
 langchain-cerebras
 chromadb>=0.4.22
-sentence-transformers
+sentence-transformers==2.7.0
 presidio-analyzer
 presidio-anonymizer
 firebase-admin
@@ -14,7 +14,7 @@ pypdf
 rank-bm25
 requests
 beautifulsoup4
-transformers
+transformers==4.48.3
 sentencepiece
 torch==2.2.2 --index-url https://download.pytorch.org/whl/cpu
 langdetect

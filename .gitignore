@@ -4,3 +4,16 @@ plans/
 .idea/
 .vscode/
 .pytest_cache/
+
+# Secrets and local data — NEVER commit
+backend/.env
+backend/wallet/
+backend/data/
+backend/chroma/
+**/chroma/
+*firebase*admin*.json
+vidhoor-*-firebase-*.json
+__pycache__/
+*.pyc
+*.log
+node_modules/

@@ -1,105 +1,110 @@
-# Backend Deployment (Oracle Cloud + Docker)
+# Backend Deployment — Oracle Cloud VM (no registry)
 
-This guide deploys only the backend stack:
+This deploys the backend stack on an OCI Compute VM **without OCIR** (no registry
+cost). GitHub Actions SSHes into the VM, pulls the latest code, builds the image
+locally, and recreates only the backend container.
 
-- FastAPI backend container
+Stack:
+- FastAPI backend container (built on the VM)
 - ChromaDB container
-- Nginx reverse proxy container
+- Nginx reverse proxy container (port 80 → backend:8000)
 
-## 1) Build and push backend image to OCIR
+## 0) OCI credentials you actually need
 
-From your local machine:
+Because we skip OCIR, the deploy pipeline needs **only SSH access** to the VM:
+nothing from OCI's API, no Auth Token, no Namespace.
+
+- `OCI_VM_HOST` — the VM's public IP (or DNS)
+- `OCI_VM_USER` — e.g. `ubuntu`
+- `OCI_VM_SSH_KEY` — the **private** key (PEM) whose public half is on the VM
+- `OCI_VM_SSH_PORT` — optional, default `22`
+
+> You still need an OCI account to *create* the VM, but those tenancy/user OCIDs
+> are not used by the deploy pipeline.
+
+## 1) Create the VM (OCI Console)
+
+Recommended (free-tier eligible):
+- **Image:** Ubuntu **22.04 LTS** (aarch64). (24.04 also works; 22.04 is safest
+  for the torch/spacy ARM wheels.)
+- **Shape:** `VM.Standard.A1.Flex` (ARM Ampere) — choose **2 OCPUs / 12 GB RAM**.
+  (Always-Free cap is 4 OCPUs / 24 GB total in the tenancy.)
+- **Networking:** assign a **public IP**; create/attach a VCN.
+- **SSH:** paste your **public** key (generate with `ssh-keygen -t ed25519`).
+- **Security Lists / Ingress:** allow `22/tcp` (SSH) and `80/tcp` (nginx).
+  Optionally `8001/tcp` if you want direct backend access.
+- Note the **public IP** — that is `OCI_VM_HOST`.
+
+> Boot volume is 200 GB free-tier, plenty for the ~10–11 GB image + Chroma data.
+
+## 2) One-time setup on the VM
 
 ```bash
-cd backend
-export OCI_REGION=us-ashburn-1
-export OCI_NAMESPACE=<your-namespace>
-export OCI_USERNAME=<your-ocir-username>
-export OCI_AUTH_TOKEN=<your-ocir-auth-token>
-export IMAGE_REPO=vidhoor-backend
-export IMAGE_TAG=latest
+ssh ubuntu@<VM_IP>
 
-bash deploy/build_and_push_ocir.sh
+# install docker + compose plugin
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-plugin git
+sudo usermod -aG docker $USER   # re-login after this
+
+# clone the (public) repo
+sudo git clone https://github.com/amolrathod7875/Vidhoor.git /opt/vidhoor
+sudo chown -R $USER:$USER /opt/vidhoor
 ```
 
-## 2) Prepare backend environment on OCI host
+`.env`, `wallet/`, and `data/` are **not in git** — copy them from your machine
+once (and again if they change):
 
-On the OCI VM/instance, place backend code at a path like `/opt/vidhoor/backend` and create:
+```bash
+# from your local machine
+scp backend/.env ubuntu@<VM_IP>:/opt/vidhoor/backend/.env
+scp -r backend/wallet ubuntu@<VM_IP>:/opt/vidhoor/backend/wallet
+scp -r backend/data  ubuntu@<VM_IP>:/opt/vidhoor/backend/data
+```
 
-- `.env` (copy from `.env.example` and fill values)
-- `wallet/` folder with Oracle wallet files (if Oracle DB uses wallet)
-
-Required minimum:
-
-- `CEREBRAS_API_KEY`
-- `ORACLE_USER`
-- `ORACLE_PASSWORD`
-- `ORACLE_DSN`
-- `ORACLE_WALLET_PASSWORD` (if wallet auth enabled)
-
-## 3) Deploy backend stack on OCI host
+First deploy (builds the image on the VM; ~15–40 min on first run, fast after):
 
 ```bash
 cd /opt/vidhoor/backend
-export OCI_REGION=us-ashburn-1
-export OCI_NAMESPACE=<your-namespace>
-export OCI_USERNAME=<your-ocir-username>
-export OCI_AUTH_TOKEN=<your-ocir-auth-token>
-export BACKEND_IMAGE=us-ashburn-1.ocir.io/<your-namespace>/vidhoor-backend:latest
-
 bash deploy/deploy_backend_oci.sh
 ```
+
+## 3) GitHub Actions auto-deploy
+
+The workflow `.github/workflows/backend-auto-deploy.yml` runs on push to `main`
+(backend changes). It SSHes into the VM and does:
+
+1. `git fetch --all && git reset --hard origin/main`
+2. `docker compose build backend`
+3. `docker compose up -d --no-deps --force-recreate backend`
+4. prune images older than 7 days
+
+Add these **repository secrets** (Settings → Secrets → Actions):
+- `OCI_VM_HOST`
+- `OCI_VM_USER`
+- `OCI_VM_SSH_KEY` (private key PEM content)
+- `OCI_VM_SSH_PORT` (optional, default `22`)
+
+> `git reset --hard` only touches tracked files; your untracked `.env`, `wallet/`,
+> and `data/` stay intact on the VM.
 
 ## 4) Verify
 
 ```bash
+curl http://<VM_IP>/
 docker compose -f deploy/docker-compose.oci.yml ps
-curl http://127.0.0.1/
 ```
 
-If security lists allow ingress on `80`, test from browser:
+If the security list allows ingress on `80`, open `http://<VM_IP>/` in a browser.
 
-- `http://<oci-public-ip>/`
+## 5) Frontend (Vercel)
 
-## 5) Update/redeploy
-
-1. Build and push new image tag.
-2. Update `BACKEND_IMAGE`.
-3. Run `bash deploy/deploy_backend_oci.sh` again.
-
-## 6) Optional: Automatic deploy on `git push`
-
-This repo now includes workflow:
-
-- `.github/workflows/backend-auto-deploy.yml`
-
-What it does on push to `main` (backend changes):
-
-1. Builds backend image for `linux/arm64` with GitHub Actions layer cache
-2. Pushes to OCIR (`latest` + commit SHA tag)
-3. SSHes into OCI VM and runs `deploy/deploy_backend_oci.sh` with SHA-pinned `BACKEND_IMAGE`
-4. VM pulls/recreates only `backend` container (no full stack rebuild)
-
-Configure these GitHub repository secrets:
-
-- `OCI_REGION` (example: `ap-mumbai-1`)
-- `OCI_NAMESPACE` (example: `bmerfrkjsskj`)
-- `OCI_REGISTRY_USERNAME` (full OCIR username, example: `bmerfrkjsskj/amolrathod7875470402@gmail.com`)
-- `OCI_AUTH_TOKEN` (OCI auth token)
-- `OCI_VM_HOST` (public IP or DNS of VM)
-- `OCI_VM_USER` (example: `ubuntu`)
-- `OCI_VM_SSH_KEY` (private key content for the VM, PEM format)
-- `OCI_VM_SSH_PORT` (optional, default `22`)
-
-Notes:
-
-- VM path is assumed as `/opt/vidhoor/backend`.
-- Ensure updated `deploy/` scripts from this repo are present on VM.
-- If VM does not pull latest repo automatically, manually sync backend folder once after adding this workflow.
-- Deploy script also prunes stale images older than 7 days to reduce disk usage.
+- `frontend/vercel.json` rewrites `/api` and `/legal` to the backend. Update the
+  hardcoded IP `161.118.160.239` → your new VM public IP, then redeploy on Vercel.
+- Optionally set Vercel env `VITE_API_BASE_URL` to `http://<VM_IP>`.
 
 ## Notes
-
-- In this setup, Nginx listens on `80` and proxies to backend on `8000` internally.
-- API remains available under `/api/...` via Nginx.
-- Chroma data is persisted in Docker volume `chroma_data`.
+- Nginx listens on `80` and proxies to backend on `8000` internally.
+- Chroma data persists in the Docker volume `chroma_data`.
+- Image is built for `linux/arm64` (A1 shape). If you ever use an x86 shape
+  (`VM.Standard.E2.1.Micro`), rebuild natively on that VM (no cross-arch needed).

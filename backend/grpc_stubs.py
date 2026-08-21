@@ -35,40 +35,45 @@ class _FakeOTLPSpanExporter:
 _otel_grpc.OTLPSpanExporter = _FakeOTLPSpanExporter
 sys.modules["opentelemetry.exporter.otlp.proto.grpc.trace_exporter"] = _otel_grpc
 
-_oracledb_stub = types.ModuleType("oracledb")
+# The real oracledb driver works fine on Linux (thin mode, no native client
+# needed). The fake stub below is only for restricted Windows environments where
+# the Oracle client libraries cannot load. Guard it so Oracle persistence works
+# on the Linux deployment host.
+if sys.platform.startswith("win"):
+    _oracledb_stub = types.ModuleType("oracledb")
 
-class _FakeCursor:
-    def execute(self, *a, **kw): pass
-    def fetchall(self): return []
-    def fetchone(self): return None
-    def fetchmany(self, *a): return []
-    def close(self): pass
-    @property
-    def description(self): return []
-    @property
-    def rowcount(self): return 0
-    @property
-    def lastrowid(self): return None
+    class _FakeCursor:
+        def execute(self, *a, **kw): pass
+        def fetchall(self): return []
+        def fetchone(self): return None
+        def fetchmany(self, *a): return []
+        def close(self): pass
+        @property
+        def description(self): return []
+        @property
+        def rowcount(self): return 0
+        @property
+        def lastrowid(self): return None
 
-class _FakeConnection:
-    def cursor(self): return _FakeCursor()
-    def close(self): pass
-    def commit(self): pass
-    def rollback(self): pass
-    def ping(self, *a, **kw): pass
+    class _FakeConnection:
+        def cursor(self): return _FakeCursor()
+        def close(self): pass
+        def commit(self): pass
+        def rollback(self): pass
+        def ping(self, *a, **kw): pass
 
-class _FakeDatabaseError(Exception): pass
+    class _FakeDatabaseError(Exception): pass
 
-class _Defaults:
-    fetch_lobs = False
+    class _Defaults:
+        fetch_lobs = False
 
-_oracledb_stub.connect = lambda *a, **kw: _FakeConnection()
-_oracledb_stub.Cursor = _FakeCursor
-_oracledb_stub.Connection = _FakeConnection
-_oracledb_stub.DatabaseError = _FakeDatabaseError
-_oracledb_stub.OperationalError = _FakeDatabaseError
-_oracledb_stub.IntegrityError = _FakeDatabaseError
-_oracledb_stub.ProgrammingError = _FakeDatabaseError
-_oracledb_stub.Error = _FakeDatabaseError
-_oracledb_stub.defaults = _Defaults()
-sys.modules["oracledb"] = _oracledb_stub
+    _oracledb_stub.connect = lambda *a, **kw: _FakeConnection()
+    _oracledb_stub.Cursor = _FakeCursor
+    _oracledb_stub.Connection = _FakeConnection
+    _oracledb_stub.DatabaseError = _FakeDatabaseError
+    _oracledb_stub.OperationalError = _FakeDatabaseError
+    _oracledb_stub.IntegrityError = _FakeDatabaseError
+    _oracledb_stub.ProgrammingError = _FakeDatabaseError
+    _oracledb_stub.Error = _FakeDatabaseError
+    _oracledb_stub.defaults = _Defaults()
+    sys.modules["oracledb"] = _oracledb_stub

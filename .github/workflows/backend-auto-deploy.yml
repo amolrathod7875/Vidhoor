@@ -1,47 +1,25 @@
-name: Backend Auto Deploy (OCI)
+name: Backend Deploy (OCI VM, no registry)
 
+# Builds the image directly on the OCI VM via SSH — no OCIR/registry cost.
 on:
   push:
-    branches: ["main"]
+    branches: [main]
     paths:
       - "backend/**"
       - ".github/workflows/backend-auto-deploy.yml"
   workflow_dispatch:
 
+concurrency:
+  group: backend-deploy
+  cancel-in-progress: false
+
 jobs:
-  deploy-backend:
+  deploy:
+    name: Deploy to OCI VM over SSH
     runs-on: ubuntu-latest
-    env:
-      IMAGE_URI_BASE: ${{ secrets.OCI_REGION }}.ocir.io/${{ secrets.OCI_NAMESPACE }}/vidhoor-backend
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to OCIR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.OCI_REGION }}.ocir.io
-          username: ${{ secrets.OCI_REGISTRY_USERNAME }}
-          password: ${{ secrets.OCI_AUTH_TOKEN }}
-
-      - name: Build and push ARM64 backend image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./backend
-          push: true
-          platforms: linux/arm64
-          cache-from: type=gha,scope=vidhoor-backend
-          cache-to: type=gha,mode=max,scope=vidhoor-backend
-          tags: |
-            ${{ env.IMAGE_URI_BASE }}:latest
-            ${{ env.IMAGE_URI_BASE }}:${{ github.sha }}
-
-      - name: Deploy on OCI VM via SSH
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.OCI_VM_HOST }}
           username: ${{ secrets.OCI_VM_USER }}
@@ -49,12 +27,11 @@ jobs:
           port: ${{ secrets.OCI_VM_SSH_PORT || '22' }}
           script: |
             set -euo pipefail
-            cd /opt/vidhoor/backend
-
-            export OCI_REGION='${{ secrets.OCI_REGION }}'
-            export OCI_NAMESPACE='${{ secrets.OCI_NAMESPACE }}'
-            export OCI_REGISTRY_USERNAME='${{ secrets.OCI_REGISTRY_USERNAME }}'
-            export OCI_AUTH_TOKEN='${{ secrets.OCI_AUTH_TOKEN }}'
-            export BACKEND_IMAGE='${{ env.IMAGE_URI_BASE }}:${{ github.sha }}'
-
-            bash deploy/deploy_backend_oci.sh
+            cd /opt/vidhoor
+            git fetch --all
+            git reset --hard origin/main
+            cd backend
+            docker compose -f deploy/docker-compose.oci.yml build backend
+            docker compose -f deploy/docker-compose.oci.yml up -d --no-deps --force-recreate backend
+            docker image prune -af --filter "until=168h" || true
+            docker compose -f deploy/docker-compose.oci.yml ps
