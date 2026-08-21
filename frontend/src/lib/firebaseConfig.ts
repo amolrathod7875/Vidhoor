@@ -2,13 +2,12 @@ import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCEpJ_shshUSG-qrpCAwuPHNnVb0MjDxOg",
-  authDomain: "vidhoor-18df7.firebaseapp.com",
-  projectId: "vidhoor-18df7",
-  storageBucket: "vidhoor-18df7.firebasestorage.app",
-  messagingSenderId: "104415676953",
-  appId: "1:104415676953:web:34e02a32984ea1d3c2f888",
-  measurementId: "G-ZC5G82DEY9",
+  apiKey: "AIzaSyD6zw7Vvn_EKu-0x6sKAbM24iZzS5YXsoQ",
+  authDomain: "vidhoor-7875.firebaseapp.com",
+  projectId: "vidhoor-7875",
+  storageBucket: "vidhoor-7875.firebasestorage.app",
+  messagingSenderId: "384405187202",
+  appId: "1:384405187202:web:ad18a4ee0992bafe9f229b",
 };
 
 const app = initializeApp(firebaseConfig);
