@@ -60,7 +60,15 @@ once (and again if they change):
 scp backend/.env ubuntu@<VM_IP>:/opt/vidhoor/backend/.env
 scp -r backend/wallet ubuntu@<VM_IP>:/opt/vidhoor/backend/wallet
 scp -r backend/data  ubuntu@<VM_IP>:/opt/vidhoor/backend/data
+# Firebase Admin service-account JSON (gitignored; NOT in the image — mounted at runtime)
+scp backend/*firebase*admin*.json ubuntu@<VM_IP>:/opt/vidhoor/backend/
 ```
+
+> The Firebase service-account key is intentionally excluded from the image (see
+> `.dockerignore`). `deploy/docker-compose.oci.yml` bind-mounts it into the
+> container at `/app/<filename>` matching `FIREBASE_SERVICE_ACCOUNT_PATH` in
+> `.env`. Re-scp the key (and update `FIREBASE_SERVICE_ACCOUNT_PATH`) whenever you
+> switch Firebase projects, then `docker compose up -d --no-deps --force-recreate backend`.
 
 First deploy (builds the image on the VM; ~15–40 min on first run, fast after):
 
