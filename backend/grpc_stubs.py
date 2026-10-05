@@ -5,29 +5,41 @@ import types
 os.environ.setdefault("CHROMA_TELEMETRY_DISABLED", "true")
 os.environ.setdefault("OTEL_PYTHON_DISABLED", "true")
 
-_grpc_cython = types.ModuleType("grpc._cython")
-_grpc_cython.CompressionAlgorithm = type("CompressionAlgorithm", (), {
-    "none": 0, "deflate": 1, "gzip": 2,
-})()
-sys.modules["grpc._cython"] = _grpc_cython
+# Only apply grpc stubs if the real grpc module cannot be imported.
+# This preserves grpc-dependent libraries (qdrant-client, etc.) on
+# environments where grpc loads successfully.
+_real_grpc_available = False
+try:
+    import importlib
+    real_grpc = importlib.import_module("grpc")
+    _real_grpc_available = hasattr(real_grpc, "insecure_channel")
+except Exception:
+    _real_grpc_available = False
 
-_grpc_typing = types.ModuleType("grpc._typing")
-_grpc_typing.MetadataType = tuple
-sys.modules["grpc._typing"] = _grpc_typing
+if not _real_grpc_available:
+    _grpc_cython = types.ModuleType("grpc._cython")
+    _grpc_cython.CompressionAlgorithm = type("CompressionAlgorithm", (), {
+        "none": 0, "deflate": 1, "gzip": 2,
+    })()
+    sys.modules["grpc._cython"] = _grpc_cython
 
-_grpc_stub = types.ModuleType("grpc")
-_grpc_stub.ChannelCredentials = lambda *a, **kw: None
-_grpc_stub.Compression = type("Compression", (), {
-    "none": 0, "deflate": 1, "gzip": 2,
-})()
-_grpc_stub.StatusCode = type("StatusCode", (), {
-    "OK": 0, "CANCELLED": 1, "UNKNOWN": 2,
-})()
-_grpc_stub.insecure_channel = lambda *a, **kw: None
-_grpc_stub.secure_channel = lambda *a, **kw: None
-_grpc_stub.RpcError = Exception
-_grpc_stub.RpcCredentials = None
-sys.modules["grpc"] = _grpc_stub
+    _grpc_typing = types.ModuleType("grpc._typing")
+    _grpc_typing.MetadataType = tuple
+    sys.modules["grpc._typing"] = _grpc_typing
+
+    _grpc_stub = types.ModuleType("grpc")
+    _grpc_stub.ChannelCredentials = lambda *a, **kw: None
+    _grpc_stub.Compression = type("Compression", (), {
+        "none": 0, "deflate": 1, "gzip": 2,
+    })()
+    _grpc_stub.StatusCode = type("StatusCode", (), {
+        "OK": 0, "CANCELLED": 1, "UNKNOWN": 2,
+    })()
+    _grpc_stub.insecure_channel = lambda *a, **kw: None
+    _grpc_stub.secure_channel = lambda *a, **kw: None
+    _grpc_stub.RpcError = Exception
+    _grpc_stub.RpcCredentials = None
+    sys.modules["grpc"] = _grpc_stub
 
 _otel_grpc = types.ModuleType("opentelemetry.exporter.otlp.proto.grpc.trace_exporter")
 class _FakeOTLPSpanExporter:

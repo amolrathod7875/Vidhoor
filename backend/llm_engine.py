@@ -1,6 +1,6 @@
 """LLM orchestration for Vidhoor Legal Copilot.
 
-This module handles context-grounded answer generation using ChatCerebras.
+This module handles context-grounded answer generation using ChatGroq.
 """
 
 from __future__ import annotations
@@ -17,56 +17,64 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 try:
-	from dotenv import load_dotenv
+    from dotenv import load_dotenv
 except Exception:  # pragma: no cover - optional dependency at runtime
-	load_dotenv = None
+    load_dotenv = None
+
+try:
+    import groq
+except Exception:  # pragma: no cover - optional dependency at runtime
+    groq = None
 
 logger = logging.getLogger(__name__)
 
 
-def _load_chat_cerebras() -> Any:
-	"""Load ChatCerebras class from supported import paths.
+def _load_chat_groq() -> Any:
+    """Load ChatGroq class from supported import paths.
 
-	Returns:
-		ChatCerebras class object.
+    Returns:
+        ChatGroq class object.
 
-	Raises:
-		ImportError: If langchain-cerebras is not installed or import path differs.
-	"""
-	try:
-		return getattr(import_module("langchain_cerebras"), "ChatCerebras")
-	except Exception:
-		# Alternate path used by some package versions.
-		return getattr(import_module("langchain_cerebras.chat_models"), "ChatCerebras")
+    Raises:
+        ImportError: If langchain-groq is not installed or import path differs.
+    """
+    try:
+        return getattr(import_module("langchain_groq"), "ChatGroq")
+    except Exception:
+        # Alternate path used by some package versions.
+        return getattr(import_module("langchain_groq.chat_models"), "ChatGroq")
 
 
 class LLMEngine:
-	"""Generate legal responses from retrieved context using Cerebras LLM."""
+	"""Generate legal responses from retrieved context using Groq LLM."""
 
-	def __init__(self, model: str = "gpt-oss-120b") -> None:
-		"""Initialize ChatCerebras model.
+	def __init__(self, model: str = "openai/gpt-oss-120b") -> None:
+		"""Initialize ChatGroq model.
 
 		Args:
-			model: Cerebras chat model name.
+			model: Primary Groq chat model name.
 
 		Raises:
-			EnvironmentError: If CEREBRAS_API_KEY is not set.
+			EnvironmentError: If GROQ_API_KEY is not set.
 			RuntimeError: If model initialization fails.
 		"""
 		self._load_environment()
-		api_key = os.environ.get("CEREBRAS_API_KEY")
+		api_key = os.environ.get("GROQ_API_KEY")
 		if not api_key:
 			raise EnvironmentError(
-				"CEREBRAS_API_KEY is not set. Please add it to your environment."
+				"GROQ_API_KEY is not set. Please add it to your environment."
 			)
 
 		self._api_key = api_key
 		self._api_base = (
-			os.environ.get("CEREBRAS_API_BASE")
-			or os.environ.get("CEREBRAS_API_URL")
-			or "https://api.cerebras.ai/v1"
+			os.environ.get("GROQ_API_BASE")
+			or os.environ.get("GROQ_API_URL")
+			or os.environ.get("GROQ_BASE_URL")
+			or ""
 		).strip()
-		self._apply_openai_compat_env()
+		self._api_base_explicit = bool(self._api_base)
+		if not self._api_base:
+			self._api_base = "https://api.groq.com/openai/v1"
 		self._log_llm_env_snapshot()
 		self._model_candidates = self._build_model_candidates(model)
 		self._active_model = self._model_candidates[0]
@@ -74,13 +82,13 @@ class LLMEngine:
 		try:
 			self.llm = self._create_llm(self._active_model)
 		except ImportError as exc:
-			logger.exception("langchain-cerebras package import failed")
+			logger.exception("langchain-groq package import failed")
 			raise RuntimeError(
-				"langchain-cerebras is not installed or importable in this environment"
+				"langchain-groq is not installed or importable in this environment"
 			) from exc
 		except Exception as exc:
-			logger.exception("Failed to initialize ChatCerebras model")
-			raise RuntimeError("Unable to initialize Cerebras chat model") from exc
+			logger.exception("Failed to initialize ChatGroq model")
+			raise RuntimeError("Unable to initialize Groq chat model") from exc
 
 		# Strict grounding prompt for legal safety and hallucination control.
 		self.prompt = ChatPromptTemplate.from_messages(
@@ -235,9 +243,10 @@ class LLMEngine:
 	@staticmethod
 	def _build_model_candidates(primary_model: str) -> list[str]:
 		"""Build a unique list of model aliases to try in order."""
+		fallback_model = os.environ.get("GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b").strip()
 		candidates = [
 			primary_model,
-			"gpt-oss-120b",
+			fallback_model,
 		]
 
 		ordered_unique: list[str] = []
@@ -247,16 +256,19 @@ class LLMEngine:
 		return ordered_unique
 
 	def _create_llm(self, model_name: str):
-		"""Create a ChatCerebras instance for the given model."""
-		ChatCerebras = _load_chat_cerebras()
+		"""Create a ChatGroq instance for the given model."""
+		ChatGroq = _load_chat_groq()
 		kwargs: dict[str, Any] = {
-			"model": model_name,
 			"api_key": self._api_key,
+			"model": model_name,
+			"temperature": float(os.environ.get("GROQ_TEMPERATURE", "0.2")),
+			"max_retries": int(os.environ.get("GROQ_MAX_RETRIES", "2")),
+			"timeout": int(os.environ.get("GROQ_REQUEST_TIMEOUT", "60")),
 		}
 
-		if self._api_base:
+		if self._api_base_explicit and self._api_base:
 			try:
-				params = inspect.signature(ChatCerebras).parameters
+				params = inspect.signature(ChatGroq).parameters
 				if "base_url" in params:
 					kwargs["base_url"] = self._api_base
 				elif "api_base" in params:
@@ -271,11 +283,10 @@ class LLMEngine:
 			except (ValueError, TypeError):
 				pass
 
-		llm = ChatCerebras(**kwargs)
+		llm = ChatGroq(**kwargs)
 		client = getattr(llm, "client", None) or getattr(llm, "root_client", None)
 		client_base = getattr(client, "base_url", None)
-		logger.warning("ChatCerebras client base: %s", client_base)
-		logger.warning("ChatCerebras organization: %s", getattr(llm, "organization", None))
+		logger.warning("ChatGroq client base: %s", client_base)
 		return llm
 
 	def _switch_model(self, model_name: str) -> None:
@@ -298,30 +309,18 @@ class LLMEngine:
 		if env_path.exists():
 			load_dotenv(dotenv_path=env_path, override=False)
 
-	def _apply_openai_compat_env(self) -> None:
-		"""Apply OpenAI-compatible env settings for Cerebras clients."""
-		if self._api_base:
-			os.environ["OPENAI_API_BASE"] = self._api_base
-			os.environ["OPENAI_BASE_URL"] = self._api_base
-
-		existing_openai_key = os.environ.get("OPENAI_API_KEY")
-		if existing_openai_key and existing_openai_key != self._api_key:
-			logger.warning("OPENAI_API_KEY is set; using CEREBRAS_API_KEY for Cerebras calls")
-		os.environ["OPENAI_API_KEY"] = self._api_key
-
-		if os.environ.get("OPENAI_ORG_ID") or os.environ.get("OPENAI_ORGANIZATION"):
-			logger.warning("Clearing OpenAI org env vars for Cerebras calls")
-			os.environ.pop("OPENAI_ORG_ID", None)
-			os.environ.pop("OPENAI_ORGANIZATION", None)
-
-	def _log_llm_env_snapshot(self) -> None:
+	@staticmethod
+	def _log_llm_env_snapshot() -> None:
 		"""Log non-sensitive LLM env snapshot for debugging."""
-		key = str(self._api_key or "")
-		key_hint = f"{key[:6]}...{key[-4:]}" if len(key) > 10 else "<short>"
-		logger.warning("Cerebras API base resolved: %s", self._api_base)
-		logger.warning("OpenAI base env: %s", os.environ.get("OPENAI_BASE_URL"))
-		logger.warning("OpenAI api base env: %s", os.environ.get("OPENAI_API_BASE"))
-		logger.warning("Using API key hint: %s", key_hint)
+		api_key = os.environ.get("GROQ_API_KEY", "")
+		logger.warning("GROQ_API_KEY is %s", "set" if api_key else "missing")
+		logger.warning(
+			"Groq API base resolved: %s",
+			os.environ.get("GROQ_API_BASE")
+			or os.environ.get("GROQ_API_URL")
+			or os.environ.get("GROQ_BASE_URL")
+			or "https://api.groq.com/openai/v1",
+		)
 
 	@staticmethod
 	def _enforce_subheading_bullets(markdown_text: str) -> str:
@@ -509,10 +508,13 @@ class LLMEngine:
 				if "model_not_found" in error_text or "does not exist" in error_text:
 					logger.warning("Model '%s' unavailable, trying fallback", model_name)
 					continue
-				logger.exception("Cerebras generation failed")
+				if groq and isinstance(exc, groq.RateLimitError):
+					logger.warning("Rate limited on model '%s', trying fallback", model_name)
+					continue
+				logger.exception("LLM provider generation failed")
 				raise RuntimeError("Failed to generate legal response") from exc
 
-		logger.exception("All configured Cerebras model aliases failed")
+		logger.exception("All configured model aliases failed")
 		raise RuntimeError("Failed to generate legal response") from last_error
 
 	def generate_general_response(self, masked_query: str) -> str:
@@ -537,10 +539,13 @@ class LLMEngine:
 				if "model_not_found" in error_text or "does not exist" in error_text:
 					logger.warning("Model '%s' unavailable, trying fallback", model_name)
 					continue
-				logger.exception("Cerebras generation failed for general response")
+				if groq and isinstance(exc, groq.RateLimitError):
+					logger.warning("Rate limited on model '%s', trying fallback", model_name)
+					continue
+				logger.exception("LLM provider generation failed for general response")
 				raise RuntimeError("Failed to generate general response") from exc
 
-		logger.exception("All configured Cerebras model aliases failed")
+		logger.exception("All configured model aliases failed")
 		raise RuntimeError("Failed to generate general response") from last_error
 
 	def generate_enhanced_prompt(self, raw_prompt: str, dialect: str = "legal") -> str:
@@ -583,10 +588,13 @@ class LLMEngine:
 				if "model_not_found" in error_text or "does not exist" in error_text:
 					logger.warning("Model '%s' unavailable, trying fallback", model_name)
 					continue
-				logger.exception("Cerebras enhancement failed")
+				if groq and isinstance(exc, groq.RateLimitError):
+					logger.warning("Rate limited on model '%s', trying fallback", model_name)
+					continue
+				logger.exception("LLM provider enhancement failed")
 				raise RuntimeError("Failed to enhance prompt") from exc
 
-		logger.exception("All configured Cerebras model aliases failed for enhancement")
+		logger.exception("All configured model aliases failed for enhancement")
 		raise RuntimeError("Failed to enhance prompt") from last_error
 
 	@staticmethod
@@ -663,6 +671,9 @@ class LLMEngine:
 				if "model_not_found" in error_text or "does not exist" in error_text:
 					logger.warning("Model '%s' unavailable, trying fallback", model_name)
 					continue
+				if groq and isinstance(exc, groq.RateLimitError):
+					logger.warning("Rate limited on model '%s', trying fallback", model_name)
+					continue
 				logger.warning("Failed to generate session title, falling back", exc_info=True)
 				break
 
@@ -707,6 +718,9 @@ class LLMEngine:
 				error_text = str(exc).lower()
 				if "model_not_found" in error_text or "does not exist" in error_text:
 					logger.warning("Model '%s' unavailable, trying fallback", model_name)
+					continue
+				if groq and isinstance(exc, groq.RateLimitError):
+					logger.warning("Rate limited on model '%s', trying fallback", model_name)
 					continue
 				logger.warning("Failed to generate follow-up questions", exc_info=True)
 				break

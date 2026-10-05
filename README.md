@@ -43,7 +43,7 @@ Frontend runs on `http://127.0.0.1:5173` by default and calls backend at `http:/
 ## Environment Variables (High-Level)
 
 ### Backend core
-- `CEREBRAS_API_KEY`
+- `GROQ_API_KEY`
 - `CHROMA_HOST` (default `127.0.0.1`; use `chroma` only inside Docker Compose)
 - `CHROMA_PORT` (default `8000`)
 - `BACKEND_HOST` (default `0.0.0.0`)

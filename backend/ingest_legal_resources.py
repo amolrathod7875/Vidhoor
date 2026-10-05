@@ -1,12 +1,11 @@
-"""Batch ingestion utility for Indian legal resources into Chroma.
+"""Batch ingestion utility for Indian legal resources.
 
-Supports PDF/TXT/MD ingestion and is designed for loading Constitution plus
-3-5 additional legal materials.
+Supports PDF/TXT/MD ingestion into Chroma or Qdrant backends.
 
 Examples:
     python ingest_legal_resources.py --inputs data/constitution.pdf data/bns.pdf
-    python ingest_legal_resources.py --input-dir data/legal_docs --status active
-    python ingest_legal_resources.py --inputs data/constitution.pdf --act "Constitution of India"
+    python ingest_legal_resources.py --input-dir data/legal_docs --status active --backend chroma
+    python ingest_legal_resources.py --inputs data/constitution.pdf --act "Constitution of India" --backend qdrant
 """
 
 from __future__ import annotations
@@ -290,7 +289,6 @@ def split_into_chunks(text: str, chunk_size: int = 700, overlap: int = 200) -> l
     if not normalized.strip():
         return []
 
-    # Gazette-style section headers usually appear like "\n64. ...".
     hard_break_pattern = re.compile(r"\n([0-9]{1,3})\.\s")
     break_points = [0]
     break_points.extend(match.start() + 1 for match in hard_break_pattern.finditer(normalized))
@@ -300,7 +298,6 @@ def split_into_chunks(text: str, chunk_size: int = 700, overlap: int = 200) -> l
     for index in range(len(break_points) - 1):
         segment = normalized[break_points[index] : break_points[index + 1]].strip()
         if segment:
-            # Preserve newlines for line-aware section detection while normalizing spacing.
             segments.append(re.sub(r"[ \t]+", " ", segment))
 
     chunks: list[str] = []
@@ -351,54 +348,67 @@ def detect_reference(
     chunk: str,
     default_section: str | None = None,
     default_article: str | None = None,
+    act_name: str = "",
 ) -> dict[str, str]:
-    """Extract article/section metadata from chunk with fallback carry-forward."""
-    metadata: dict[str, str] = {}
+    """Extract article/section metadata from chunk with fallback carry-forward.
 
-    # Prefer explicit act cues in chunk text to avoid BNSS/BNS mislabeling.
+    Constitution of India uses 'Article'; all other statutes use 'Section'.
+    The metadata fields are populated accordingly and never cross-populated.
+    """
+    metadata: dict[str, str] = {}
+    is_constitution = "constitution" in act_name.lower()
+
     if re.search(r"\b(?:Nagarik\s+Suraksha|BNSS)\b", chunk, flags=re.IGNORECASE):
         metadata["act"] = "Bharatiya Nagarik Suraksha Sanhita"
     elif re.search(r"\b(?:Nyaya\s+Sanhita|BNS)\b", chunk, flags=re.IGNORECASE):
         metadata["act"] = "Bharatiya Nyaya Sanhita"
 
-    article_matches = re.findall(
-        r"\b(?:Article|Art\.?)\s*[-:]?\s*([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
-        chunk,
-        flags=re.IGNORECASE,
-    )
-    if article_matches:
-        metadata["article"] = str(article_matches[-1]).upper()
-    elif default_article:
-        metadata["article"] = default_article
+    if is_constitution:
+        article_matches = re.findall(
+            r"\b(?:Article|Art\.?)\s*[-:]?\s*([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
+            chunk,
+            flags=re.IGNORECASE,
+        )
+        if article_matches:
+            metadata["article"] = str(article_matches[0]).upper()
+        else:
+            bare_matches = re.findall(
+                r"\b([0-9]+[A-Z]?)\s*\.\s*[A-Z]",
+                chunk,
+            )
+            if bare_matches:
+                metadata["article"] = str(bare_matches[0]).upper()
 
-    # Prefer section headers at line start, e.g. "64. ..." in gazette texts.
-    section_header = re.search(
-        r"^\s*([0-9]{1,3}[A-Z]?)\.",
-        chunk,
-        flags=re.MULTILINE,
-    )
-    section_value = section_header.group(1).upper() if section_header else None
+        # Carry forward last known article if no new one found in this chunk
+        if not metadata.get("article") and default_article:
+            metadata["article"] = default_article
 
+        # Ensure section stays empty for Constitution
+        metadata.pop("section", None)
+        return metadata
+
+    # Statute: use Section, not Article
     section_matches = re.findall(
         r"\b(?:Section|Sec\.?)\s*[-:]?\s*([0-9]+[A-Z]?(?:\([0-9A-Z]+\))?)\b",
         chunk,
         flags=re.IGNORECASE,
     )
-    if section_value is None and section_matches:
-        section_value = str(section_matches[-1]).upper()
-    if not section_value:
+    if section_matches:
+        metadata["section"] = str(section_matches[0]).upper()
+    else:
         heading_matches = re.findall(
-            r"(?:^|\s)([0-9]{1,3}[A-Z]?)\s*[\.:]\s*(?:[A-Z][a-z]|[A-Z]{2,})",
+            r"(?:^|\s)([0-9]{1,3}[A-Z]?)\s*[\.:]\s*(?:\([0-9A-Z]+\)\s*)?(?:[A-Z][a-z]|[A-Z]{2,})",
             chunk,
             flags=re.IGNORECASE,
         )
         if heading_matches:
-            section_value = str(heading_matches[-1]).upper()
+            metadata["section"] = str(heading_matches[0]).upper()
 
-    if section_value:
-        metadata["section"] = section_value
-    elif default_section:
-        # Avoid carrying section forward across semantic boundary markers.
+    if metadata.get("section"):
+        return metadata
+
+    # Carry forward last known section if no new one found
+    if default_section:
         semantic_boundary = re.search(
             r"\b(punishment|definition|means|shall be punished)\b",
             chunk,
@@ -420,7 +430,7 @@ def build_metadata(
     resource_category: str = "statute",
     case_metadata: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build metadata aligned with chunks for Chroma ingestion."""
+    """Build metadata aligned with chunks for ingestion."""
     all_metadata: list[dict[str, Any]] = []
     last_section: str | None = None
     last_article: str | None = None
@@ -445,6 +455,7 @@ def build_metadata(
             chunk,
             default_section=last_section,
             default_article=last_article,
+            act_name=act_name,
         )
         item.update(reference)
 
@@ -488,7 +499,7 @@ def collect_input_files(inputs: list[str], input_dir: str | None) -> list[Path]:
 
 
 def ingest_file(
-    manager: ChromaManager,
+    manager: Any,
     file_path: Path,
     status: str,
     chunk_size: int,
@@ -549,13 +560,17 @@ def ingest_file(
         case_metadata=case_metadata,
     )
 
+    if hasattr(manager, "upsert_legal_chunks"):
+        result = manager.upsert_legal_chunks(text_chunks=chunks, metadata_list=metadata)
+        return result.get("chunks_processed", 0)
+
     return manager.ingest_law(text_chunks=chunks, metadata_list=metadata)
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Ingest PDF/TXT/MD legal resources into Chroma collection 'indian_law'."
+        description="Ingest PDF/TXT/MD legal resources into vector store."
     )
     parser.add_argument(
         "--inputs",
@@ -617,6 +632,34 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use OCR fallback for scanned/image-only PDFs when text extraction is empty",
     )
+    parser.add_argument(
+        "--backend",
+        choices=["chroma", "qdrant"],
+        default="chroma",
+        help="Ingestion backend (default: chroma)",
+    )
+    parser.add_argument(
+        "--qdrant-host",
+        default="127.0.0.1",
+        help="Qdrant host (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--qdrant-port",
+        type=int,
+        default=6333,
+        help="Qdrant port (default: 6333)",
+    )
+    parser.add_argument(
+        "--qdrant-grpc-port",
+        type=int,
+        default=6334,
+        help="Qdrant gRPC port (default: 6334)",
+    )
+    parser.add_argument(
+        "--qdrant-collection",
+        default="indian_law_v2",
+        help="Qdrant collection name (default: indian_law_v2)",
+    )
     return parser.parse_args()
 
 
@@ -625,12 +668,24 @@ def main() -> None:
     args = parse_args()
     files = collect_input_files(inputs=args.inputs, input_dir=args.input_dir)
 
-    manager = ChromaManager(
-        host=args.host,
-        port=args.port,
-        preferred_embedding_model="all-MiniLM-L6-v2",
-        fallback_embedding_model="all-MiniLM-L6-v2",
-    )
+    backend = (args.backend or "chroma").strip().lower()
+    if backend == "qdrant":
+        from qdrant_manager import QdrantManager
+        manager = QdrantManager(
+            host=args.qdrant_host,
+            port=args.qdrant_port,
+            grpc_port=args.qdrant_grpc_port,
+            collection_name=args.qdrant_collection,
+            prefer_grpc=True,
+        )
+        manager.ensure_collection()
+    else:
+        manager = ChromaManager(
+            host=args.host,
+            port=args.port,
+            preferred_embedding_model="all-MiniLM-L6-v2",
+            fallback_embedding_model="all-MiniLM-L6-v2",
+        )
 
     total_chunks = 0
     results: list[tuple[str, int]] = []

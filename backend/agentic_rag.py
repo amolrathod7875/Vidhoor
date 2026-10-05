@@ -66,12 +66,12 @@ class AgenticRagRunner:
         self,
         *,
         llm_engine: Any,
-        chroma_manager: Any,
+        retrieval_manager: Any,
         helpers: AgenticRagHelpers,
         config: AgenticRagConfig | None = None,
     ) -> None:
         self._llm_engine = llm_engine
-        self._chroma_manager = chroma_manager
+        self._retrieval_manager = retrieval_manager
         self._helpers = helpers
         self._config = config or AgenticRagConfig()
 
@@ -288,14 +288,14 @@ class AgenticRagRunner:
 
         for act_filter in act_filters:
             for query_variant in query_variants:
-                retrieval = self._chroma_manager.retrieve_context_with_metadata(
+                retrieval = self._retrieval_manager.retrieve_context_with_metadata(
                     query_string=query_variant,
                     filter_status="active",
                     filter_act=act_filter,
                 )
 
                 if act_filter and not retrieval.get("documents") and not retrieval.get("citations"):
-                    retrieval = self._chroma_manager.retrieve_context_with_metadata(
+                    retrieval = self._retrieval_manager.retrieve_context_with_metadata(
                         query_string=query_variant,
                         filter_status="active",
                         filter_act=None,
