@@ -2,7 +2,6 @@ import os
 import sys
 import types
 
-os.environ.setdefault("CHROMA_TELEMETRY_DISABLED", "true")
 os.environ.setdefault("OTEL_PYTHON_DISABLED", "true")
 
 # Only apply grpc stubs if the real grpc module cannot be imported.

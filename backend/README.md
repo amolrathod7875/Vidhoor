@@ -5,7 +5,7 @@ FastAPI backend for legal chat, retrieval, drafting, OCR/FIR analysis, evidence 
 ## Tech Stack
 
 - FastAPI + Uvicorn
-- ChromaDB (vector + hybrid retrieval helpers)
+- Qdrant (hybrid dense+sparse legal retrieval with BGE-M3 + BGE reranker)
 - Oracle DB (`oracledb`) for sessions/messages/evidence/drafts
 - Groq LLM via `langchain-groq`
 - Presidio for PII masking
@@ -14,13 +14,15 @@ FastAPI backend for legal chat, retrieval, drafting, OCR/FIR analysis, evidence 
 ## Folder Structure
 
 - `main.py` — API entrypoint and core request orchestration
-- `chroma_manager.py` — retrieval/indexing and metadata-aware citation flow
+- `qdrant_manager.py` — Qdrant collection lifecycle, ingestion, and hybrid retrieval
+- `services/legal_embeddings.py` — BGE-M3 dense + sparse embedding helpers
+- `services/legal_reranker.py` — BGE reranker for citation reranking
 - `database.py` — Oracle repositories + schema initialization
 - `llm_engine.py` — legal/general generation pipelines and prompting
 - `pii_vault.py` — masking/unmasking sensitive user data
-- `ingest_legal_resources.py` — ingestion utility for statutes/cases from `data/`
-- `ingest_constitution.py` — constitution-focused ingestion helper
-- `docker-compose.chroma.yml` — local Chroma service
+- `ingest_legal_resources.py` — Qdrant-only ingestion utility for statutes/cases from `data/`
+- `ingest_constitution.py` — Constitution-focused Qdrant ingestion helper
+- `docker-compose.qdrant.yml` — local Qdrant service
 - `requirements.txt` — Python dependencies
 - `services/`
   - `indian_kanoon_live.py` — live case-link extraction + relevance scoring
@@ -31,7 +33,6 @@ FastAPI backend for legal chat, retrieval, drafting, OCR/FIR analysis, evidence 
 - `data/` — legal source files used for ingestion
   - `Case/` — case-law source documents
   - statute PDFs (BNS, BNSS, BSA, Constitution, etc.)
-- `chroma/` — local Chroma persistence volume
 - `wallet/` — Oracle wallet/config files
 - `__pycache__/` — Python bytecode cache
 
@@ -39,21 +40,20 @@ FastAPI backend for legal chat, retrieval, drafting, OCR/FIR analysis, evidence 
 
 ```bash
 cd backend
-python -m venv .venv
-# Windows PowerShell
-.\.venv\Scripts\Activate.ps1
+conda activate vidhoor
 pip install -r requirements.txt
 ```
 
 ## Run Services
 
-### Start ChromaDB
+### Start Qdrant
 
 ```bash
-docker compose -f docker-compose.chroma.yml up -d
+docker compose -f docker-compose.qdrant.yml up -d
+python scripts/diag_qdrant.py
 ```
 
-### (Optional) Ingest legal resources
+### Ingest legal resources (maintenance only)
 
 ```bash
 python ingest_legal_resources.py --input-dir data --resource-category auto --status active --ocr-fallback
@@ -88,10 +88,16 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ### Core
 
 - `GROQ_API_KEY`
-- `CHROMA_HOST` (default `127.0.0.1`; use `chroma` only inside Docker Compose)
-- `CHROMA_PORT` (default `8000`)
 - `BACKEND_HOST` (default `0.0.0.0`)
 - `BACKEND_PORT` (default `8001`)
+
+### Qdrant
+
+- `QDRANT_HOST` (default `127.0.0.1`)
+- `QDRANT_PORT` (default `6333`)
+- `QDRANT_GRPC_PORT` (default `6334`)
+- `QDRANT_COLLECTION` (default `indian_law_v2`)
+- `QDRANT_PREFER_GRPC` (default `true`)
 
 ### Oracle
 
@@ -134,7 +140,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ## Development Notes
 
 - Responses are citation-grounded where available; legal prompts are strict about context use.
-- Indian Kanoon results are fetched live and appended as links; they are not ingested into Chroma.
+- Indian Kanoon results are fetched live and appended as links; they are not stored in the vector database.
 - Keep `wallet/` and secret files out of source control where possible.
 
 ## Backend Deployment (Oracle Cloud + Docker)
@@ -143,7 +149,7 @@ Backend-only deployment assets are available under `deploy/`:
 
 - `deploy/build_and_push_ocir.sh` — build image and push to OCIR
 - `deploy/deploy_backend_oci.sh` — pull image and start stack on OCI host
-- `deploy/docker-compose.oci.yml` — backend + chroma + nginx runtime stack
+- `deploy/docker-compose.oci.yml` — backend + qdrant + nginx runtime stack
 - `deploy/nginx.conf` — reverse proxy config
 - `deploy/DEPLOYMENT.md` — step-by-step runbook
 

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # grpc stub guard
 # ---------------------------------------------------------------------------
-# grpc_stubs.py (imported by main.py / chroma_manager.py on Windows) may
+# grpc_stubs.py (imported by main.py on Windows) may
 # replace the real grpc module with a lightweight fake. qdrant_client
 # requires the real grpc, so we save and restore it around qdrant imports.
 _real_grpc = sys.modules.get("grpc")
@@ -727,7 +727,7 @@ class QdrantManager:
     ) -> dict[str, list[Any]]:
         """Retrieve legal chunks with citation metadata using hybrid dense+sparse retrieval.
 
-        External contract matches Chroma's retrieve_context_with_metadata.
+        External contract matches the retrieval manager interface.
         """
         if not query_string or not query_string.strip():
             raise ValueError("query_string cannot be empty")
@@ -860,7 +860,7 @@ class QdrantManager:
 
 
 # ---------------------------------------------------------------------------
-# Shared legal-domain helpers (reused from Chroma)
+# Shared legal-domain helpers
 # ---------------------------------------------------------------------------
 def _clean_snippet(text: str) -> str:
     """Normalize noisy OCR/gazette text while preserving full excerpt content."""

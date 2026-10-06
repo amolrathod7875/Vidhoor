@@ -1,11 +1,10 @@
 """Batch ingestion utility for Indian legal resources.
 
-Supports PDF/TXT/MD ingestion into Chroma or Qdrant backends.
+Supports PDF/TXT/MD ingestion into Qdrant backend.
 
 Examples:
     python ingest_legal_resources.py --inputs data/constitution.pdf data/bns.pdf
-    python ingest_legal_resources.py --input-dir data/legal_docs --status active --backend chroma
-    python ingest_legal_resources.py --inputs data/constitution.pdf --act "Constitution of India" --backend qdrant
+    python ingest_legal_resources.py --input-dir data/legal_docs --status active
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from chroma_manager import ChromaManager
+from qdrant_manager import QdrantManager
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
 
@@ -601,44 +600,6 @@ def parse_args() -> argparse.Namespace:
         help="Chunk overlap in characters (default: 200)",
     )
     parser.add_argument(
-        "--host",
-        default="localhost",
-        help="Chroma host (default: localhost)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Chroma port (default: 8000)",
-    )
-    parser.add_argument(
-        "--act",
-        default=None,
-        help="Optional override for 'act' metadata field for all files",
-    )
-    parser.add_argument(
-        "--source-base-url",
-        default=None,
-        help="Optional public base URL for source files (e.g., https://cdn.example.com/legal)",
-    )
-    parser.add_argument(
-        "--resource-category",
-        choices=["auto", "statute", "case"],
-        default="auto",
-        help="Ingestion profile for metadata enrichment (default: auto)",
-    )
-    parser.add_argument(
-        "--ocr-fallback",
-        action="store_true",
-        help="Use OCR fallback for scanned/image-only PDFs when text extraction is empty",
-    )
-    parser.add_argument(
-        "--backend",
-        choices=["chroma", "qdrant"],
-        default="chroma",
-        help="Ingestion backend (default: chroma)",
-    )
-    parser.add_argument(
         "--qdrant-host",
         default="127.0.0.1",
         help="Qdrant host (default: 127.0.0.1)",
@@ -668,24 +629,14 @@ def main() -> None:
     args = parse_args()
     files = collect_input_files(inputs=args.inputs, input_dir=args.input_dir)
 
-    backend = (args.backend or "chroma").strip().lower()
-    if backend == "qdrant":
-        from qdrant_manager import QdrantManager
-        manager = QdrantManager(
-            host=args.qdrant_host,
-            port=args.qdrant_port,
-            grpc_port=args.qdrant_grpc_port,
-            collection_name=args.qdrant_collection,
-            prefer_grpc=True,
-        )
-        manager.ensure_collection()
-    else:
-        manager = ChromaManager(
-            host=args.host,
-            port=args.port,
-            preferred_embedding_model="all-MiniLM-L6-v2",
-            fallback_embedding_model="all-MiniLM-L6-v2",
-        )
+    manager = QdrantManager(
+        host=args.qdrant_host,
+        port=args.qdrant_port,
+        grpc_port=args.qdrant_grpc_port,
+        collection_name=args.qdrant_collection,
+        prefer_grpc=True,
+    )
+    manager.ensure_collection()
 
     total_chunks = 0
     results: list[tuple[str, int]] = []

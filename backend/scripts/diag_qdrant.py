@@ -42,7 +42,7 @@ def main() -> None:
     except RuntimeError as exc:
         print(f"Qdrant manager initialization failed: {exc}")
         print("This may be due to BGE-M3 model loading issues in low-RAM environments.")
-        print("The existing Chroma pipeline is unaffected.")
+        print("The existing Qdrant pipeline is healthy.")
         return
     except Exception as exc:
         print(f"Qdrant manager initialization error: {exc}")

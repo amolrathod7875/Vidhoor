@@ -21,7 +21,6 @@ import uvicorn
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials as firebase_credentials
 
-from chroma_manager import ChromaManager
 from database import get_chat_repo
 from llm_engine import LLMEngine
 from agentic_rag import AgenticRagConfig, AgenticRagHelpers, AgenticRagRunner
@@ -284,12 +283,10 @@ class PromptEnhanceResponse(BaseModel):
     tokens_used: Optional[int] = None
 
 
-_chroma_manager: Optional[ChromaManager] = None
 _qdrant_manager: Optional[Any] = None
 _llm_engine: Optional[LLMEngine] = None
 _pii_vault: Optional[PIIVault] = None
 _ocr_service: Optional[VisionOCRService] = None
-_bm25_refresh_counter: int = 0
 _firebase_auth_initialized: bool = False
 
 _SHARE_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
@@ -513,54 +510,10 @@ def _extract_recent_session_context(user_id: str, session_id: str | None, limit:
     return "\n\n".join(lines)
 
 
-def get_chroma_manager() -> ChromaManager:
-    """Get or create singleton Chroma manager instance."""
-    global _chroma_manager
-    if _chroma_manager is None:
-        chroma_host = os.environ.get("CHROMA_HOST", "127.0.0.1")
-        chroma_port = int(os.environ.get("CHROMA_PORT", "8000"))
-        _chroma_manager = ChromaManager(
-            host=chroma_host,
-            port=chroma_port,
-            preferred_embedding_model="all-MiniLM-L6-v2",
-            fallback_embedding_model="all-MiniLM-L6-v2",
-        )
-        try:
-            count = _chroma_manager.collection.count()
-            if count == 0:
-                logger.warning(
-                    "Chroma collection '%s' is empty at startup.",
-                    _chroma_manager.collection_name,
-                )
-            else:
-                logger.info(
-                    "Chroma collection '%s' has %d chunks.",
-                    _chroma_manager.collection_name,
-                    count,
-                )
-            dim_info = _chroma_manager.check_embedding_dimension()
-            if dim_info.get("expected") and dim_info.get("stored") and not dim_info.get("match"):
-                logger.warning(
-                    "Embedding dimension mismatch in collection '%s': expected %s, stored %s",
-                    _chroma_manager.collection_name,
-                    dim_info.get("expected"),
-                    dim_info.get("stored"),
-                )
-            elif dim_info.get("expected") and dim_info.get("stored"):
-                logger.info(
-                    "Embedding dimension OK: %d",
-                    dim_info.get("expected"),
-                )
-        except Exception as exc:
-            logger.warning("Chroma startup health check failed: %s", exc)
-    return _chroma_manager
-
-
 def get_qdrant_manager() -> Any:
     """Get or create singleton Qdrant manager instance.
 
-    Phase 1: Qdrant is optional. If it cannot connect, a warning is logged
-    but the application continues using Chroma.
+    If Qdrant cannot connect, a warning is logged and None is returned.
     """
     global _qdrant_manager
     if _qdrant_manager is None:
@@ -602,14 +555,14 @@ def get_qdrant_manager() -> Any:
 
 
 def get_retrieval_manager() -> Any:
-    """Return the active retrieval manager based on RAG_VECTOR_BACKEND.
+    """Return the Qdrant retrieval manager.
 
-    Phase 1: defaults to Chroma. Future values may include 'qdrant'.
+    Qdrant is the permanent legal retrieval backend.
     """
-    backend = os.environ.get("RAG_VECTOR_BACKEND", "chroma").strip().lower()
-    if backend == "qdrant":
-        return get_qdrant_manager()
-    return get_chroma_manager()
+    manager = get_qdrant_manager()
+    if manager is None:
+        raise RuntimeError("Qdrant retrieval backend is unavailable")
+    return manager
 
 
 def get_llm_engine() -> LLMEngine:
@@ -1387,37 +1340,15 @@ def _fallback_follow_ups(query: str, citations: list[Citation]) -> list[str]:
 
 def _retrieve_legal_citations(masked_query: str, request: Request | None = None) -> tuple[list[Citation], Optional[float]]:
     """Retrieve citation objects and overall confidence for a query."""
-    backend = os.environ.get("RAG_VECTOR_BACKEND", "chroma").strip().lower()
     act_filters = infer_act_filters(masked_query)
 
     raw_citations: list[dict[str, Any]] = []
     seen_citations: set[tuple[str, str]] = set()
 
-    if backend == "qdrant":
-        qdrant_manager = get_qdrant_manager()
-        if qdrant_manager is not None:
-            for act_filter in act_filters:
-                retrieval = qdrant_manager.retrieve_context_with_metadata(
-                    query_string=masked_query,
-                    filter_status="active",
-                    filter_act=act_filter,
-                )
-                for item in retrieval.get("citations", []):
-                    citation_doc_id = str(item.get("doc_id") or "")
-                    citation_snippet = str(item.get("snippet") or "")
-                    citation_key = (citation_doc_id, citation_snippet.strip().lower())
-                    if citation_key in seen_citations:
-                        continue
-                    seen_citations.add(citation_key)
-                    raw_citations.append(item)
-        else:
-            logger.warning("Qdrant backend requested but manager unavailable; falling back to Chroma.")
-            backend = "chroma"
-
-    if backend != "qdrant":
-        chroma_manager = get_chroma_manager()
+    qdrant_manager = get_qdrant_manager()
+    if qdrant_manager is not None:
         for act_filter in act_filters:
-            retrieval = chroma_manager.retrieve_context_with_metadata(
+            retrieval = qdrant_manager.retrieve_context_with_metadata(
                 query_string=masked_query,
                 filter_status="active",
                 filter_act=act_filter,
@@ -1430,6 +1361,8 @@ def _retrieve_legal_citations(masked_query: str, request: Request | None = None)
                     continue
                 seen_citations.add(citation_key)
                 raw_citations.append(item)
+    else:
+        logger.error("Qdrant retrieval backend is unavailable; cannot retrieve legal citations.")
 
     citations = [Citation(**item) for item in raw_citations]
     citations = [
@@ -1578,19 +1511,6 @@ async def _log_active_chat_repo() -> None:
 
 @app.get("/")
 async def health_check():
-    chroma_info = {"collection": "indian_law", "count": 0, "status": "unknown"}
-    try:
-        manager = get_chroma_manager()
-        chroma_info["count"] = manager.collection.count()
-        dim_info = manager.check_embedding_dimension()
-        chroma_info["embedding_dimension"] = dim_info
-        if dim_info.get("expected") and dim_info.get("stored") and not dim_info.get("match"):
-            chroma_info["status"] = "degraded: embedding dimension mismatch"
-        else:
-            chroma_info["status"] = "healthy"
-    except Exception as exc:
-        chroma_info["status"] = f"error: {exc}"
-
     qdrant_info = {"status": "not_configured"}
     try:
         qdrant_manager = get_qdrant_manager()
@@ -1603,7 +1523,6 @@ async def health_check():
 
     return {
         "status": "Vidhoor Backend is live and waiting for legal queries.",
-        "chroma": chroma_info,
         "qdrant": qdrant_info,
     }
 
@@ -1677,7 +1596,6 @@ async def enhance_user_prompt(
 @app.post("/api/chat", response_model=ChatResponse)
 async def process_chat(chat_request: ChatRequest, request: Request, user: dict = Depends(verify_token)):
     try:
-        global _bm25_refresh_counter
         pii_vault = get_pii_vault()
         llm_engine = get_llm_engine()
         masked_message, pii_map = pii_vault.mask_text(chat_request.message)
@@ -1715,243 +1633,116 @@ async def process_chat(chat_request: ChatRequest, request: Request, user: dict =
 
         if is_legal_query(masked_message):
             try:
-                retrieval_backend = os.environ.get("RAG_VECTOR_BACKEND", "chroma").strip().lower()
-                if retrieval_backend == "qdrant":
-                    qdrant_manager = get_qdrant_manager()
-                    if qdrant_manager is not None:
-                        act_filters = infer_act_filters(masked_message)
-                        raw_citations: list[dict[str, Any]] = []
-                        seen_citations: set[tuple[str, str]] = set()
+                qdrant_manager = get_qdrant_manager()
+                if qdrant_manager is not None:
+                    act_filters = infer_act_filters(masked_message)
+                    raw_citations: list[dict[str, Any]] = []
+                    seen_citations: set[tuple[str, str]] = set()
 
-                        for act_filter in act_filters:
-                            retrieval = qdrant_manager.retrieve_context_with_metadata(
-                                query_string=masked_message,
-                                filter_status="active",
-                                filter_act=act_filter,
-                            )
-                            for item in retrieval.get("citations", []):
-                                citation_doc_id = str(item.get("doc_id") or "")
-                                citation_snippet = str(item.get("snippet") or "")
-                                citation_key = (citation_doc_id, citation_snippet.strip().lower())
-                                if citation_key in seen_citations:
-                                    continue
-                                seen_citations.add(citation_key)
-                                raw_citations.append(item)
-
-                        raw_citations = rerank_candidates(
-                            query=masked_message,
-                            candidates=raw_citations,
+                    for act_filter in act_filters:
+                        retrieval = qdrant_manager.retrieve_context_with_metadata(
+                            query_string=masked_message,
+                            filter_status="active",
+                            filter_act=act_filter,
                         )
+                        for item in retrieval.get("citations", []):
+                            citation_doc_id = str(item.get("doc_id") or "")
+                            citation_snippet = str(item.get("snippet") or "")
+                            citation_key = (citation_doc_id, citation_snippet.strip().lower())
+                            if citation_key in seen_citations:
+                                continue
+                            seen_citations.add(citation_key)
+                            raw_citations.append(item)
 
-                        citations = [Citation(**item) for item in raw_citations]
-                        citations = [
-                            citation
-                            for citation in citations
-                            if _citation_matches_allowed_acts(citation, act_filters)
+                    raw_citations = rerank_candidates(
+                        query=masked_message,
+                        candidates=raw_citations,
+                    )
+
+                    citations = [Citation(**item) for item in raw_citations]
+                    citations = [
+                        citation
+                        for citation in citations
+                        if _citation_matches_allowed_acts(citation, act_filters)
+                    ]
+                    citations.sort(key=lambda item: item.confidence, reverse=True)
+                    citations = _normalize_citation_links(citations[:8], request)
+
+                    use_agentic_qdrant = os.getenv("ENABLE_AGENTIC_RAG", "true").strip().lower() not in {"0", "false", "no"}
+                    if use_agentic_qdrant and citations:
+                        retrieved_context = [
+                            _format_citation_context(item)
+                            for item in citations
+                            if item.snippet
                         ]
-                        citations.sort(key=lambda item: item.confidence, reverse=True)
-                        citations = _normalize_citation_links(citations[:8], request)
-
-                        use_agentic_qdrant = os.getenv("ENABLE_AGENTIC_RAG", "true").strip().lower() not in {"0", "false", "no"}
-                        if use_agentic_qdrant and citations:
-                            retrieved_context = [
-                                _format_citation_context(item)
-                                for item in citations
-                                if item.snippet
-                            ]
-                            legal_masked_query = masked_message
-                            if masked_document_context:
-                                legal_masked_query = (
-                                    f"{masked_message}\n\n"
-                                    "Document context from uploaded file:\n"
-                                    f"{masked_document_context[:5000]}"
-                                )
-                            try:
-                                agentic_runner = _build_agentic_rag_runner(
-                                    llm_engine=llm_engine,
-                                    retrieval_manager=qdrant_manager,
-                                )
-                                agentic_result = agentic_runner.run(
-                                    masked_query=legal_masked_query,
-                                    masked_document_context=masked_document_context,
-                                    request=request,
-                                )
-                                ai_response_masked = agentic_result.response
-                                citations = agentic_result.citations
-                                overall_confidence = agentic_result.overall_confidence
-                                skip_follow_ups = agentic_result.clarifying_question is not None
-                            except Exception as exc:
-                                logger.warning("Agentic RAG failed on Qdrant, falling back to direct LLM: %s", exc)
-                                ai_response_masked = llm_engine.generate_legal_response(
-                                    masked_query=legal_masked_query,
-                                    retrieved_context_list=retrieved_context,
-                                )
-                        elif citations:
-                            overall_confidence = round(
-                                sum(item.confidence for item in citations) / len(citations),
-                                2,
-                            )
-                            retrieved_context = [
-                                _format_citation_context(item)
-                                for item in citations
-                                if item.snippet
-                            ]
-                            legal_masked_query = masked_message
-                            if masked_document_context:
-                                legal_masked_query = (
-                                    f"{masked_message}\n\n"
-                                    "Document context from uploaded file:\n"
-                                    f"{masked_document_context[:5000]}"
-                                )
-                            ai_response_masked = llm_engine.generate_legal_response(
-                                masked_query=legal_masked_query,
-                                retrieved_context_list=retrieved_context,
-                            )
-                        else:
-                            citations = []
-                            overall_confidence = None
-                            if masked_document_context:
-                                ai_response_masked = _generate_document_grounded_response(
-                                    llm_engine=llm_engine,
-                                    masked_query=masked_message,
-                                    masked_document_context=masked_document_context,
-                                    document_name=document_label,
-                                )
-                            else:
-                                ai_response_masked = llm_engine.generate_general_response(
-                                    masked_query=masked_message,
-                                )
-                    else:
-                        logger.warning("Qdrant backend requested but unavailable; falling back to Chroma.")
-                        retrieval_backend = "chroma"
-
-                if retrieval_backend != "qdrant":
-                    chroma_manager = get_chroma_manager()
-                    _bm25_refresh_counter += 1
-                    if _bm25_refresh_counter % 5 == 0:
-                        chroma_manager.refresh_bm25_from_oracle(filter_status="active", filter_act=None)
-
-                    use_agentic = os.getenv("ENABLE_AGENTIC_RAG", "true").strip().lower() not in {"0", "false", "no"}
-                    if use_agentic:
-                        agentic_runner = _build_agentic_rag_runner(
-                            llm_engine=llm_engine,
-                            retrieval_manager=chroma_manager,
-                        )
-                        agentic_result = agentic_runner.run(
-                            masked_query=masked_message,
-                            masked_document_context=masked_document_context,
-                            request=request,
-                        )
-                        ai_response_masked = agentic_result.response
-                        citations = agentic_result.citations
-                        overall_confidence = agentic_result.overall_confidence
-                        skip_follow_ups = agentic_result.clarifying_question is not None
-                    else:
-
-                        retrieval_query = masked_message
+                        legal_masked_query = masked_message
                         if masked_document_context:
-                            retrieval_query = (
+                            legal_masked_query = (
                                 f"{masked_message}\n\n"
-                                "Document context (for grounding):\n"
-                                f"{masked_document_context[:3000]}"
+                                "Document context from uploaded file:\n"
+                                f"{masked_document_context[:5000]}"
                             )
-
-                        act_filters = infer_act_filters(retrieval_query)
-
-                        retrieved_context: list[str] = []
-                        raw_citations: list[dict[str, Any]] = []
-                        seen_context: set[str] = set()
-                        seen_citations: set[tuple[str, str]] = set()
-
-                        for act_filter in act_filters:
-                            retrieval = chroma_manager.retrieve_context_with_metadata(
-                                query_string=retrieval_query,
-                                filter_status="active",
-                                filter_act=act_filter,
+                        try:
+                            agentic_runner = _build_agentic_rag_runner(
+                                llm_engine=llm_engine,
+                                retrieval_manager=qdrant_manager,
                             )
-
-                            if (
-                                act_filter
-                                and not retrieval.get("documents")
-                                and not retrieval.get("citations")
-                            ):
-                                retrieval = chroma_manager.retrieve_context_with_metadata(
-                                    query_string=retrieval_query,
-                                    filter_status="active",
-                                    filter_act=None,
-                                )
-
-                            for context_chunk in retrieval.get("documents", []):
-                                chunk_text = str(context_chunk or "")
-                                chunk_key = chunk_text.strip().lower()
-                                if not chunk_text or chunk_key in seen_context:
-                                    continue
-                                seen_context.add(chunk_key)
-                                retrieved_context.append(chunk_text)
-
-                            for item in retrieval.get("citations", []):
-                                citation_doc_id = str(item.get("doc_id") or "")
-                                citation_snippet = str(item.get("snippet") or "")
-                                citation_key = (citation_doc_id, citation_snippet.strip().lower())
-                                if citation_key in seen_citations:
-                                    continue
-                                seen_citations.add(citation_key)
-                                raw_citations.append(item)
-
-                        citations = [Citation(**item) for item in raw_citations]
-                        citations = [
-                            citation
-                            for citation in citations
-                            if _citation_matches_allowed_acts(citation, act_filters)
-                        ]
-                        citations.sort(key=lambda item: item.confidence, reverse=True)
-                        citations = citations[:8]
-                        citations = _normalize_citation_links(citations, request)
-
-                        # retrieved_context already populated from Chroma results above
-
-                        requested_references = _extract_requested_references(masked_message)
-
-                        if not retrieved_context:
-                            if masked_document_context:
-                                citations = []
-                                overall_confidence = None
-                                ai_response_masked = _generate_document_grounded_response(
-                                    llm_engine=llm_engine,
-                                    masked_query=masked_message,
-                                    masked_document_context=masked_document_context,
-                                    document_name=document_label,
-                                )
-                            else:
-                                citations = []
-                                overall_confidence = None
-                                ai_response_masked = llm_engine.generate_general_response(
-                                    masked_query=masked_message,
-                                )
-                        else:
-                            retrieved_context = [
-                                _format_citation_context(item)
-                                for item in citations
-                                if item.snippet
-                            ]
-
-                            if citations:
-                                overall_confidence = round(
-                                    sum(item.confidence for item in citations) / len(citations),
-                                    2,
-                                )
-
-                            legal_masked_query = masked_message
-                            if masked_document_context:
-                                legal_masked_query = (
-                                    f"{masked_message}\n\n"
-                                    "Document context from uploaded file:\n"
-                                    f"{masked_document_context[:5000]}"
-                                )
+                            agentic_result = agentic_runner.run(
+                                masked_query=legal_masked_query,
+                                masked_document_context=masked_document_context,
+                                request=request,
+                            )
+                            ai_response_masked = agentic_result.response
+                            citations = agentic_result.citations
+                            overall_confidence = agentic_result.overall_confidence
+                            skip_follow_ups = agentic_result.clarifying_question is not None
+                        except Exception as exc:
+                            logger.warning("Agentic RAG failed on Qdrant, falling back to direct LLM: %s", exc)
                             ai_response_masked = llm_engine.generate_legal_response(
                                 masked_query=legal_masked_query,
                                 retrieved_context_list=retrieved_context,
                             )
+                    elif citations:
+                        overall_confidence = round(
+                            sum(item.confidence for item in citations) / len(citations),
+                            2,
+                        )
+                        retrieved_context = [
+                            _format_citation_context(item)
+                            for item in citations
+                            if item.snippet
+                        ]
+                        legal_masked_query = masked_message
+                        if masked_document_context:
+                            legal_masked_query = (
+                                f"{masked_message}\n\n"
+                                "Document context from uploaded file:\n"
+                                f"{masked_document_context[:5000]}"
+                            )
+                        ai_response_masked = llm_engine.generate_legal_response(
+                            masked_query=legal_masked_query,
+                            retrieved_context_list=retrieved_context,
+                        )
+                    else:
+                        citations = []
+                        overall_confidence = None
+                        if masked_document_context:
+                            ai_response_masked = _generate_document_grounded_response(
+                                llm_engine=llm_engine,
+                                masked_query=masked_message,
+                                masked_document_context=masked_document_context,
+                                document_name=document_label,
+                            )
+                        else:
+                            ai_response_masked = llm_engine.generate_general_response(
+                                masked_query=masked_message,
+                            )
+                else:
+                    logger.error("Qdrant retrieval backend is unavailable; cannot provide citation-grounded legal answer.")
+                    ai_response_masked = (
+                        "I couldn't access the legal source index right now, so I can't provide a "
+                        "citation-grounded legal answer at the moment. Please try again shortly."
+                    )
             except Exception as exc:
                 logger.exception("Legal retrieval failed: %s", exc)
                 ai_response_masked = (
@@ -2345,7 +2136,6 @@ async def analyze_fir_document(
     user: dict = Depends(verify_token),
 ):
     """Analyze uploaded FIR/scanned document with OCR, translation, PII masking, and legal grounding."""
-    global _bm25_refresh_counter
 
     filename = file.filename or "uploaded_document"
     extension = Path(filename).suffix.lower()
@@ -2419,12 +2209,6 @@ async def analyze_fir_document(
             f"\n\nSummary Draft:\n{summary_masked[:3000]}"
             f"\n\nUser focus:\n{effective_query[:1500]}"
         )
-
-        retrieval_backend = os.environ.get("RAG_VECTOR_BACKEND", "chroma").strip().lower()
-        if retrieval_backend == "chroma":
-            _bm25_refresh_counter += 1
-            if _bm25_refresh_counter % 5 == 0:
-                get_chroma_manager().refresh_bm25_from_oracle(filter_status="active", filter_act=None)
 
         citations, overall_confidence = _retrieve_legal_citations(legal_query, request)
 

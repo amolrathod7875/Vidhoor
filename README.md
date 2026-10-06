@@ -3,7 +3,7 @@
 Vidhoor is an Indian legal copilot application with:
 - a FastAPI backend for legal Q&A, retrieval, OCR/FIR analysis, drafting, and history
 - a React + Vite frontend for chat, evidence workflows, and draft operations
-- ChromaDB for retrieval indexing and Oracle for persistent user/session data
+- Qdrant hybrid dense+sparse legal retrieval using BGE-M3 and Oracle for persistent user/session data
 
 ## Repository Structure
 
@@ -19,12 +19,10 @@ Vidhoor is an Indian legal copilot application with:
 
 ```bash
 cd backend
-python -m venv .venv
-# Windows PowerShell
-.\.venv\Scripts\Activate.ps1
+conda activate vidhoor
 pip install -r requirements.txt
 
-docker compose -f docker-compose.chroma.yml up -d
+docker compose -f docker-compose.qdrant.yml up -d
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
@@ -44,8 +42,6 @@ Frontend runs on `http://127.0.0.1:5173` by default and calls backend at `http:/
 
 ### Backend core
 - `GROQ_API_KEY`
-- `CHROMA_HOST` (default `127.0.0.1`; use `chroma` only inside Docker Compose)
-- `CHROMA_PORT` (default `8000`)
 - `BACKEND_HOST` (default `0.0.0.0`)
 - `BACKEND_PORT` (default `8001`)
 - `APP_PUBLIC_BASE_URL`
@@ -75,5 +71,5 @@ Frontend runs on `http://127.0.0.1:5173` by default and calls backend at `http:/
 
 ## Notes
 
-- Live Indian Kanoon links are appended at response time and are **not** stored in ChromaDB.
+- Live Indian Kanoon links are appended at response time and are **not** stored in the vector database.
 - Respect source site terms/robots and rate limits when using scraping functionality.

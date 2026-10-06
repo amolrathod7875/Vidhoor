@@ -46,27 +46,27 @@
 
 **Show `agentic_rag.py` RouterDecision / JudgeDecision:**
 - "Step 1 — a fast **Router LLM** classifies the query: which Act applies (BNS/BNSS/BSA/Constitution/IT Act/Case Law), and what expansions to try. (`AgenticRagConfig`: max 3 expansions, 8 citations, 12k context chars.)"
-- "Step 2 — we **retrieve** from **ChromaDB** using `all-MiniLM-L6-v2` embeddings, with act filters so we don't mix up statutes."
+- "Step 2 — we **retrieve** from **Qdrant** using `BAAI/bge-m3` dense+sparse embeddings, with act filters so we don't mix up statutes."
 - "Step 3 — a **Judge/Answer LLM** checks the retrieved context. If it's insufficient, it says so instead of hallucinating. That's our anti-hallucination guard."
 
-### RAG deep-dive (show `chroma_manager` + retrieval in `main.py:_retrieve_legal_citations`)
+### RAG deep-dive (show `qdrant_manager` + retrieval in `main.py:_retrieve_legal_citations`)
 
 **Narration:**
-- "Retrieval isn't naive. We infer the act from the query (`infer_act_filters`), filter Chroma by that act, de-duplicate, sort by confidence, and only then build the prompt."
+- "Retrieval isn't naive. We infer the act from the query (`infer_act_filters`), filter Qdrant by that act, de-duplicate, sort by confidence, and only then build the prompt."
 - "Crucially, the LLM is told: answer **only** from context, copy redaction placeholders exactly, never rename BNS to IPC, and never invent a section that isn't there. (`llm_engine.py` system prompt.)"
 
 ### LLM (show `llm_engine.py`)
 
 **Narration:**
 - "The LLM is **Groq `gpt-oss-120b`**, accessed via the `langchain-groq` ChatGroq client. We use a strict grounding prompt, multiple specialized chains — legal answer, follow-ups, title, prompt-enhance — and a model fallback list so it degrades gracefully."
-- "Embeddings: **`all-MiniLM-L6-v2`** through Chroma. Persistent chunks also mirror into **Oracle** (`vidhoor_legal_chunks`) for BM25 hybrid retrieval."
+- "Embeddings: **`BAAI/bge-m3`** dense+sparse through Qdrant. Top candidates are reranked with **BGE reranker** for precision."
 
 ### Persistence & Auth
 
 **Narration:**
 - "Chat history, drafts, feedback, and encrypted evidence persist in **Oracle Autonomous DB** (wallet-secured), with a **SQLite fallback** for local dev. Auth is **Firebase** (email/Google), with a guest mode."
 
-**Screen cue:** Keep a static architecture callout box: `React → FastAPI → AgenticRAG(Groq) → ChromaDB + Oracle`.
+**Screen cue:** Keep a static architecture callout box: `React → FastAPI → AgenticRAG(Groq) → Qdrant + Oracle`.
 
 ---
 
@@ -156,8 +156,8 @@ CREATE TABLE vidhoor_user_evidence (
 
 ## Appendix — Quick reference for the presenter
 
-- **Stack:** React+TS+Vite+Tailwind+shadcn/ui · FastAPI · ChromaDB (`all-MiniLM-L6-v2`) · Oracle Autonomous DB (SQLite fallback) · Firebase Auth · Groq `gpt-oss-120b` · Presidio + regex PII · Web Crypto AES-GCM-256.
-- **RAG flow:** Router LLM → act-filtered Chroma retrieval → Judge/Answer LLM (grounding + anti-hallucination).
+- **Stack:** React+TS+Vite+Tailwind+shadcn/ui · FastAPI · Qdrant (`BAAI/bge-m3` dense+sparse + BGE reranker) · Oracle Autonomous DB (SQLite fallback) · Firebase Auth · Groq `gpt-oss-120b` · Presidio + regex PII · Web Crypto AES-GCM-256.
+- **RAG flow:** Router LLM → act-filtered Qdrant retrieval → BGE reranker → Judge/Answer LLM (grounding + anti-hallucination).
 - **Key files:** `backend/main.py`, `backend/agentic_rag.py`, `backend/llm_engine.py`, `backend/pii_vault.py`, `backend/database.py`, `frontend/src/lib/evidenceCrypto.ts`.
-- **Run locally (for live demo):** see `start.txt` — `docker compose -f docker-compose.chroma.yml up -d`, ingest, then `uvicorn main:app`, and `npm run dev` for frontend.
+- **Run locally (for live demo):** see `start.txt` — `docker compose -f docker-compose.qdrant.yml up -d`, then `uvicorn main:app`, and `npm run dev` for frontend.
 - **Evidence tables to show:** `vidhoor_user_evidence` (above) and `vidhoor_chat_messages` (stores `masked_entities` CLOB next to `content`).
