@@ -1,8 +1,9 @@
-"""Utility script to ingest Constitution of India text into Chroma.
+"""Utility script to ingest Constitution of India text into Chroma or Qdrant.
 
 Usage examples:
     python ingest_constitution.py --input data/constitution_of_india.txt
-    python ingest_constitution.py --input data/constitution_of_india.txt --status active
+    python ingest_constitution.py --input data/constitution_of_india.txt --status active --backend chroma
+    python ingest_constitution.py --input data/constitution_of_india.txt --backend qdrant
 """
 
 from __future__ import annotations
@@ -60,9 +61,17 @@ def detect_article(chunk: str) -> str | None:
         chunk,
         flags=re.IGNORECASE,
     )
-    if not match:
-        return None
-    return match.group(1).upper()
+    if match:
+        return match.group(1).upper()
+
+    bare_match = re.search(
+        r"\b([0-9]+[A-Z]?)\s*\.\s*[A-Z]",
+        chunk,
+    )
+    if bare_match:
+        return bare_match.group(1).upper()
+
+    return None
 
 
 def build_metadata(
@@ -72,7 +81,7 @@ def build_metadata(
     source_url: str = "",
     resource_type: str = "",
 ) -> list[dict[str, str]]:
-    """Build metadata list for Chroma ingestion."""
+    """Build metadata list for ingestion."""
     metadata: list[dict[str, str]] = []
     last_article: str | None = None
     for chunk in chunks:
@@ -110,11 +119,16 @@ def ingest_constitution(
     status: str,
     chunk_size: int,
     overlap: int,
-    chroma_host: str,
-    chroma_port: int,
     source_base_url: str | None,
+    backend: str = "chroma",
+    chroma_host: str = "localhost",
+    chroma_port: int = 8000,
+    qdrant_host: str = "127.0.0.1",
+    qdrant_port: int = 6333,
+    qdrant_grpc_port: int = 6334,
+    qdrant_collection: str = "indian_law_v2",
 ) -> int:
-    """Ingest Constitution text file into Chroma and return ingested chunk count."""
+    """Ingest Constitution text file into Chroma or Qdrant and return ingested chunk count."""
     text = read_text_file(input_path)
     chunks = split_into_chunks(text=text, chunk_size=chunk_size, overlap=overlap)
 
@@ -129,6 +143,20 @@ def ingest_constitution(
         resource_type=input_path.suffix.lower().lstrip("."),
     )
 
+    backend = (backend or "chroma").strip().lower()
+    if backend == "qdrant":
+        from qdrant_manager import QdrantManager
+        manager = QdrantManager(
+            host=qdrant_host,
+            port=qdrant_port,
+            grpc_port=qdrant_grpc_port,
+            collection_name=qdrant_collection,
+            prefer_grpc=True,
+        )
+        manager.ensure_collection()
+        result = manager.upsert_legal_chunks(text_chunks=chunks, metadata_list=metadata)
+        return result.get("chunks_processed", 0)
+
     manager = ChromaManager(
         host=chroma_host,
         port=chroma_port,
@@ -141,7 +169,7 @@ def ingest_constitution(
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for ingestion script."""
     parser = argparse.ArgumentParser(
-        description="Ingest Constitution of India text into Chroma collection 'indian_law'."
+        description="Ingest Constitution of India text into vector store."
     )
     parser.add_argument(
         "--input",
@@ -181,6 +209,34 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional public base URL for source files (e.g., https://cdn.example.com/legal)",
     )
+    parser.add_argument(
+        "--backend",
+        choices=["chroma", "qdrant"],
+        default="chroma",
+        help="Ingestion backend (default: chroma)",
+    )
+    parser.add_argument(
+        "--qdrant-host",
+        default="127.0.0.1",
+        help="Qdrant host (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--qdrant-port",
+        type=int,
+        default=6333,
+        help="Qdrant port (default: 6333)",
+    )
+    parser.add_argument(
+        "--qdrant-grpc-port",
+        type=int,
+        default=6334,
+        help="Qdrant gRPC port (default: 6334)",
+    )
+    parser.add_argument(
+        "--qdrant-collection",
+        default="indian_law_v2",
+        help="Qdrant collection name (default: indian_law_v2)",
+    )
     return parser.parse_args()
 
 
@@ -193,12 +249,17 @@ def main() -> None:
         status=args.status,
         chunk_size=args.chunk_size,
         overlap=args.overlap,
+        source_base_url=args.source_base_url,
+        backend=args.backend,
         chroma_host=args.host,
         chroma_port=args.port,
-        source_base_url=args.source_base_url,
+        qdrant_host=args.qdrant_host,
+        qdrant_port=args.qdrant_port,
+        qdrant_grpc_port=args.qdrant_grpc_port,
+        qdrant_collection=args.qdrant_collection,
     )
 
-    print(f"Successfully ingested {ingested} chunks into 'indian_law'.")
+    print(f"Successfully ingested {ingested} chunks into '{args.qdrant_collection if args.backend == 'qdrant' else 'indian_law'}'.")
 
 
 if __name__ == "__main__":

@@ -11,8 +11,15 @@ services:
     environment:
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_GRPC_PORT: 6334
+      QDRANT_COLLECTION: indian_law_v2
+      QDRANT_PREFER_GRPC: "true"
+      RAG_VECTOR_BACKEND: chroma
     depends_on:
       - chroma
+      - qdrant
     ports:
       - "8001:8000"
     volumes:
@@ -30,6 +37,16 @@ services:
     volumes:
       - chroma_data:/chroma/chroma
 
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: vidhoor-qdrant
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
   nginx:
     image: nginx:1.27-alpine
     container_name: vidhoor-nginx
@@ -43,3 +60,4 @@ services:
 
 volumes:
   chroma_data:
+  qdrant_data:

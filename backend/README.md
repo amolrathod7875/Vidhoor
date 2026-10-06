@@ -7,7 +7,7 @@ FastAPI backend for legal chat, retrieval, drafting, OCR/FIR analysis, evidence 
 - FastAPI + Uvicorn
 - ChromaDB (vector + hybrid retrieval helpers)
 - Oracle DB (`oracledb`) for sessions/messages/evidence/drafts
-- Cerebras LLM via `langchain-cerebras`
+- Groq LLM via `langchain-groq`
 - Presidio for PII masking
 - BeautifulSoup + requests for live Indian Kanoon link extraction
 
@@ -87,7 +87,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 
 ### Core
 
-- `CEREBRAS_API_KEY`
+- `GROQ_API_KEY`
 - `CHROMA_HOST` (default `127.0.0.1`; use `chroma` only inside Docker Compose)
 - `CHROMA_PORT` (default `8000`)
 - `BACKEND_HOST` (default `0.0.0.0`)
