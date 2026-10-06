@@ -118,7 +118,7 @@ class TestPayloadNormalization:
         assert payload["source"] == "bns.pdf"
         assert payload["act"] == "Bharatiya Nyaya Sanhita"
         assert payload["section"] == "64"
-        assert payload["article"] == "64"
+        assert payload["article"] == ""
         assert payload["doc_type"] == "statute"
         assert payload["year"] == 2023
         assert payload["page"] == 5
@@ -276,7 +276,7 @@ class TestQdrantWithMockedEmbeddings:
         assert payload["source"] == "bns.pdf"
         assert payload["act"] == "Bharatiya Nyaya Sanhita"
         assert payload["section"] == "64"
-        assert payload["article"] == "64"
+        assert payload["article"] == ""
         assert payload["doc_type"] == "statute"
         assert payload["year"] == 2023
         assert payload["page"] == 5
