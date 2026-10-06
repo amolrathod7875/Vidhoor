@@ -1,9 +1,8 @@
-"""Utility script to ingest Constitution of India text into Chroma or Qdrant.
+"""Utility script to ingest Constitution of India text into Qdrant.
 
 Usage examples:
     python ingest_constitution.py --input data/constitution_of_india.txt
-    python ingest_constitution.py --input data/constitution_of_india.txt --status active --backend chroma
-    python ingest_constitution.py --input data/constitution_of_india.txt --backend qdrant
+    python ingest_constitution.py --input data/constitution_of_india.txt --status active
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
-from chroma_manager import ChromaManager
+from qdrant_manager import QdrantManager
 
 
 def read_text_file(file_path: Path) -> str:
@@ -120,15 +119,12 @@ def ingest_constitution(
     chunk_size: int,
     overlap: int,
     source_base_url: str | None,
-    backend: str = "chroma",
-    chroma_host: str = "localhost",
-    chroma_port: int = 8000,
     qdrant_host: str = "127.0.0.1",
     qdrant_port: int = 6333,
     qdrant_grpc_port: int = 6334,
     qdrant_collection: str = "indian_law_v2",
 ) -> int:
-    """Ingest Constitution text file into Chroma or Qdrant and return ingested chunk count."""
+    """Ingest Constitution text file into Qdrant and return ingested chunk count."""
     text = read_text_file(input_path)
     chunks = split_into_chunks(text=text, chunk_size=chunk_size, overlap=overlap)
 
@@ -143,27 +139,16 @@ def ingest_constitution(
         resource_type=input_path.suffix.lower().lstrip("."),
     )
 
-    backend = (backend or "chroma").strip().lower()
-    if backend == "qdrant":
-        from qdrant_manager import QdrantManager
-        manager = QdrantManager(
-            host=qdrant_host,
-            port=qdrant_port,
-            grpc_port=qdrant_grpc_port,
-            collection_name=qdrant_collection,
-            prefer_grpc=True,
-        )
-        manager.ensure_collection()
-        result = manager.upsert_legal_chunks(text_chunks=chunks, metadata_list=metadata)
-        return result.get("chunks_processed", 0)
-
-    manager = ChromaManager(
-        host=chroma_host,
-        port=chroma_port,
-        preferred_embedding_model="all-MiniLM-L6-v2",
-        fallback_embedding_model="all-MiniLM-L6-v2",
+    manager = QdrantManager(
+        host=qdrant_host,
+        port=qdrant_port,
+        grpc_port=qdrant_grpc_port,
+        collection_name=qdrant_collection,
+        prefer_grpc=True,
     )
-    return manager.ingest_law(text_chunks=chunks, metadata_list=metadata)
+    manager.ensure_collection()
+    result = manager.upsert_legal_chunks(text_chunks=chunks, metadata_list=metadata)
+    return result.get("chunks_processed", 0)
 
 
 def parse_args() -> argparse.Namespace:
@@ -192,28 +177,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=200,
         help="Chunk overlap in characters (default: 200)",
-    )
-    parser.add_argument(
-        "--host",
-        default="localhost",
-        help="Chroma host (default: localhost)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Chroma port (default: 8000)",
-    )
-    parser.add_argument(
-        "--source-base-url",
-        default=None,
-        help="Optional public base URL for source files (e.g., https://cdn.example.com/legal)",
-    )
-    parser.add_argument(
-        "--backend",
-        choices=["chroma", "qdrant"],
-        default="chroma",
-        help="Ingestion backend (default: chroma)",
     )
     parser.add_argument(
         "--qdrant-host",
@@ -250,16 +213,13 @@ def main() -> None:
         chunk_size=args.chunk_size,
         overlap=args.overlap,
         source_base_url=args.source_base_url,
-        backend=args.backend,
-        chroma_host=args.host,
-        chroma_port=args.port,
         qdrant_host=args.qdrant_host,
         qdrant_port=args.qdrant_port,
         qdrant_grpc_port=args.qdrant_grpc_port,
         qdrant_collection=args.qdrant_collection,
     )
 
-    print(f"Successfully ingested {ingested} chunks into '{args.qdrant_collection if args.backend == 'qdrant' else 'indian_law'}'.")
+    print(f"Successfully ingested {ingested} chunks into '{args.qdrant_collection}'.")
 
 
 if __name__ == "__main__":

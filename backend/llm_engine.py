@@ -464,7 +464,7 @@ class LLMEngine:
 
 		Args:
 			masked_query: User query with sensitive values masked.
-			retrieved_context_list: Retrieved legal chunks from Chroma.
+			retrieved_context_list: list[str],
 
 		Returns:
 			Generated legal response text.

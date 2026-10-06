@@ -42,8 +42,8 @@ Primary capabilities:
                                                        │   └──────────┬─────────┘   │
                                                        │              │             │
                                                        │   ┌──────────▼─────────┐   │
-                                                       │   │ ChromaManager       │   │
-                                                       │   │ vector + BM25(Oracle)│  │
+                                                        │   │ QdrantManager       │   │
+                                                        │   │ (BGE-M3 dense+sparse)│  │
                                                        │   └──────────┬─────────┘   │
                                                        │              │             │
                                                        │   ┌──────────▼─────────┐   │
@@ -64,7 +64,7 @@ Key flow for a chat message (`/api/chat`):
 2. `verify_token` authenticates (or allows guest).
 3. `PIIVault.mask_text` masks PII before any LLM call.
 4. `is_legal_query` routes to legal RAG or general response.
-5. Agentic RAG: **Router LLM** picks act filters + query expansions → **ChromaManager**
+5. Agentic RAG: **Router LLM** picks act filters + query expansions → **QdrantManager**
    (hybrid vector + BM25) retrieves chunks → **Judge LLM** generates a grounded answer or
    returns `insufficient`.
 6. Answer is unmasked, optional Indian Kanoon links appended, follow-ups generated.
@@ -79,16 +79,16 @@ Key flow for a chat message (`/api/chat`):
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, Firebase Auth |
 | Backend | Python FastAPI, Uvicorn, Pydantic v2 |
 | LLM | Groq `gpt-oss-120b` via `langchain-groq` (`ChatGroq`), OpenAI-compatible client |
-| Embeddings | `all-MiniLM-L6-v2` (primary preferred `BAAI/bge-m3`) via `SentenceTransformerEmbeddingFunction` |
-| Vector DB | ChromaDB (HTTP server, collection `indian_law`) |
-| Hybrid retrieval | BM25 (`rank_bm25`) warmed from Oracle-persisted chunks |
+| Embeddings | `BAAI/bge-m3` dense + sparse via `FlagEmbedding` |
+| Vector DB | Qdrant (hybrid dense+sparse RRF, collection `indian_law_v2`) |
+| Hybrid retrieval | Qdrant native dense+sparse RRF + BGE reranker |
 | PII | Microsoft Presidio (`presidio_analyzer`) + custom regex recognizers for Aadhaar/PAN |
 | Client encryption | Web Crypto API — AES-GCM-256 |
 | Persistence | Oracle Autonomous DB (`oracledb`, wallet-secured); SQLite fallback for local dev |
 | OCR / Translation | Vision OCR service (`services/ocr_vision.py`) + Helsinki-NLP translation (`services/translate_helsinki.py`) |
 | Live case links | Indian Kanoon fetch (`services/indian_kanoon_live.py`) |
 | Draft export | DOCX/PDF rendering (`services/draft_exporter.py`), SMTP mailer (`services/draft_mailer.py`) |
-| Containerization | Docker Compose for Chroma (`docker-compose.chroma.yml`) |
+| Containerization | Docker Compose for Qdrant (`docker-compose.qdrant.yml`) |
 
 ---
 
@@ -113,16 +113,15 @@ Two-stage pipeline (`AgenticRagRunner`):
    `max_context_chunks=12`, `max_context_chars=12000`.
 2. **Judge/Answer** (`_judge_prompt`): checks retrieved context; returns `insufficient` if
    grounding is weak instead of hallucinating. Enabled via `ENABLE_AGENTIC_RAG` (default `true`).
-   Falls back to direct Chroma retrieval (`main.py:_retrieve_legal_citations`) when disabled.
+   Falls back to direct Qdrant retrieval (`main.py:_retrieve_legal_citations`) when disabled.
 
-### 4.3 Retrieval — `backend/chroma_manager.py`
-- Hybrid **vector (Chroma) + lexical (BM25)** fusion with fixed weights
-  `HYBRID_VECTOR_WEIGHT = 0.5`, `HYBRID_BM25_WEIGHT = 0.5`.
+### 4.3 Retrieval — `backend/qdrant_manager.py`
+- Hybrid **dense (BGE-M3) + sparse (BGE-M3)** retrieval with RRF fusion
 - Act-filtered retrieval (`infer_act_filters`) prevents mixing statutes; section/article filters
   force dependency retrieval (e.g. BNS 64/65 pulls definition 63).
 - Confidence scoring: distance→confidence, plus bonuses for reference match, court precedent
   hierarchy (`_court_precedent_weight`), and year recency (`_year_recency_weight`).
-- Chunks persisted to Oracle (`vidhoor_legal_chunks`) for BM25 rebuild; refreshed every 5 chats.
+- BGE reranker applied to top candidates for improved precision.
 
 ### 4.4 PII Vault — `backend/pii_vault.py`
 - Detects & masks: `PERSON`, `EMAIL_ADDRESS`, `PHONE_NUMBER`, `IN_AADHAAR`, `IN_PAN`.
@@ -289,7 +288,7 @@ CREATE TABLE vidhoor_legal_chunks (
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/` | Health check (+ Chroma status) |
+| GET | `/` | Health check (+ Qdrant status) |
 | POST | `/api/chat` | Legal/general Q&A with citations, confidence, follow-ups |
 | POST | `/api/prompt/enhance` | Rewrite raw prompt into optimized legal query (PII-masked) |
 | POST | `/api/fir/analyze` | OCR + translate + summarize + legal analysis of uploaded doc |
@@ -313,10 +312,9 @@ See `README.md` and `start.txt`. Essentials:
 **Backend**
 ```bash
 cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1         # Windows PowerShell
+conda activate vidhoor
 pip install -r requirements.txt
-docker compose -f docker-compose.chroma.yml up -d
+docker compose -f docker-compose.qdrant.yml up -d
 python ingest_legal_resources.py --input-dir data --resource-category auto --status active --ocr-fallback --chunk-size 700
 python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ```
@@ -330,7 +328,7 @@ npm run dev
 
 **Key environment variables**
 - `GROQ_API_KEY` (LLM)
-- `CHROMA_HOST`, `CHROMA_PORT` (vector store)
+- `QDRANT_HOST`, `QDRANT_PORT`, `QDRANT_GRPC_PORT`, `QDRANT_COLLECTION` (vector store)
 - `ORACLE_USER/PASSWORD/DSN` + wallet (`ORACLE_CONFIG_DIR`, `ORACLE_WALLET_LOCATION`,
   `ORACLE_WALLET_PASSWORD`) for persistence; omit for SQLite fallback
 - `ENABLE_AGENTIC_RAG`, `ENABLE_INDIAN_KANOON_LINKS`, `INDIAN_KANOON_TRIGGER_MODE`,

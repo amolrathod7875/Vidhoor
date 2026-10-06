@@ -6,7 +6,7 @@ locally, and recreates only the backend container.
 
 Stack:
 - FastAPI backend container (built on the VM)
-- ChromaDB container
+- Qdrant container
 - Nginx reverse proxy container (port 80 → backend:8000)
 
 ## 0) OCI credentials you actually need
@@ -35,7 +35,7 @@ Recommended (free-tier eligible):
   Optionally `8001/tcp` if you want direct backend access.
 - Note the **public IP** — that is `OCI_VM_HOST`.
 
-> Boot volume is 200 GB free-tier, plenty for the ~10–11 GB image + Chroma data.
+> Boot volume is 200 GB free-tier, plenty for the ~10–11 GB image + Qdrant data.
 
 ## 2) One-time setup on the VM
 
@@ -113,12 +113,12 @@ If the security list allows ingress on `80`, open `http://<VM_IP>/` in a browser
 
 ## Notes
 - Nginx listens on `80` and proxies to backend on `8000` internally.
-- Chroma data persists in the Docker volume `chroma_data`.
+- Qdrant data persists in the Docker volume `qdrant_data`.
 - Image is built for `linux/arm64` (A1 shape). If you ever use an x86 shape
   (`VM.Standard.E2.1.Micro`), rebuild natively on that VM (no cross-arch needed).
 
 ## Production
 - Backend is deployed at `http://130.210.10.231/` (nginx `:80` → backend `:8000`).
 - Frontend (Vercel) rewrites `/api` and `/legal` to this VM IP (see `frontend/vercel.json`).
-- Legal documents are ingested once into Chroma (persistent volume); re-run
+- Legal documents are ingested once into Qdrant (persistent volume); re-run
   `ingest_legal_resources.py` only to refresh the corpus.

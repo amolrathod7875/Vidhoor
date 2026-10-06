@@ -110,18 +110,17 @@ def test_normalize_payload_invalid_year(qdrant_manager_module):
 # ---------------------------------------------------------------------------
 # Backend selection (env parsing)
 # ---------------------------------------------------------------------------
-def test_default_backend_is_chroma(qdrant_manager_module):
+def test_default_backend_is_qdrant(qdrant_manager_module):
     mod = qdrant_manager_module
-    # Default env value should be 'chroma'
-    backend = os.environ.get("RAG_VECTOR_BACKEND", "chroma").strip().lower()
-    assert backend == "chroma"
+    backend = os.environ.get("RAG_VECTOR_BACKEND", "qdrant").strip().lower()
+    assert backend == "qdrant"
 
 
 def test_qdrant_backend_selection(qdrant_manager_module):
     mod = qdrant_manager_module
     os.environ["RAG_VECTOR_BACKEND"] = "qdrant"
     try:
-        backend = os.environ.get("RAG_VECTOR_BACKEND", "chroma").strip().lower()
+        backend = os.environ.get("RAG_VECTOR_BACKEND", "qdrant").strip().lower()
         assert backend == "qdrant"
     finally:
         os.environ.pop("RAG_VECTOR_BACKEND", None)
