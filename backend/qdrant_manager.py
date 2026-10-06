@@ -30,7 +30,6 @@ _real_grpc = sys.modules.get("grpc")
 # Optional dependency guards
 # ---------------------------------------------------------------------------
 _qdrant_client = None
-_sentence_transformers = None
 _qdrant_models = None
 
 
@@ -465,10 +464,7 @@ class QdrantManager:
         payloads: list[dict[str, Any]],
         point_ids: Optional[list[str]] = None,
     ) -> int:
-        """Upsert points into the Qdrant collection.
-
-        For Phase 2, this is wired into the main ingestion pipeline.
-        """
+        """Upsert points into the Qdrant collection."""
         if not dense_vectors or not payloads:
             return 0
         if len(dense_vectors) != len(payloads):
