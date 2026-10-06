@@ -4,10 +4,20 @@ conda activate vidhoor
 
 docker compose -f docker-compose.qdrant.yml up -d
 
+python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
+
+
 python scripts/diag_qdrant.py
 
-python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload
+# ingest legal resources (maintenance only, collection must already exist):
+cd backend
+python ingest_legal_resources.py --input-dir data --resource-category auto --status active --ocr-fallback
 
 # for tests:
 cd backend
 pytest
+
+# frontend (new terminal):
+cd frontend
+npm install
+npm run dev

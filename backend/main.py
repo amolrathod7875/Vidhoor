@@ -606,6 +606,7 @@ def _build_agentic_rag_runner(
     helpers = AgenticRagHelpers(
         infer_act_filters=infer_act_filters,
         extract_requested_references=_extract_requested_references,
+        extract_legal_targets=extract_legal_targets,
         citation_matches_allowed_acts=_citation_matches_allowed_acts,
         citation_matches_requested_references=_citation_matches_requested_references,
         format_citation_context=_format_citation_context,
@@ -952,11 +953,95 @@ def _extract_requested_references(query: str) -> list[str]:
     )
     references.extend([str(item).upper() for item in shorthand_refs])
 
+    it_act_refs = re.findall(
+        rf"\b(?:it\s*act|information\s+technology\s+act)\s*[-/]?\s*{ref_pattern}(?=\D|$)",
+        query,
+        flags=re.IGNORECASE,
+    )
+    references.extend([str(item).upper() for item in it_act_refs])
+
     ordered_unique: list[str] = []
     for ref in references:
         if ref not in ordered_unique:
             ordered_unique.append(ref)
     return ordered_unique
+
+
+def extract_legal_targets(query: str) -> list[dict[str, str]]:
+    """Extract structured act+reference targets from a legal query.
+
+    Returns a list of dicts with keys: act, reference_type, reference.
+    """
+    from main import _extract_requested_references
+    import re
+
+    targets: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(act: str, ref_type: str, ref: str) -> None:
+        key = (act, ref.upper())
+        if key in seen:
+            return
+        seen.add(key)
+        targets.append(
+            {
+                "act": act,
+                "reference_type": ref_type,
+                "reference": ref.upper(),
+            }
+        )
+
+    # Use _extract_requested_references to get all referenced numbers
+    requested = _extract_requested_references(query)
+    for ref in requested:
+        ref_upper = ref
+        # Check act context in query and assign to appropriate act
+        query_lower = query.lower()
+        if re.search(r"bns", query_lower):
+            _add("Bharatiya Nyaya Sanhita", "section", ref_upper)
+        if re.search(r"bnss", query_lower):
+            _add("Bharatiya Nagarik Suraksha Sanhita", "section", ref_upper)
+        if re.search(r"bsa", query_lower):
+            _add("Bharatiya Sakshya Adhiniyam", "section", ref_upper)
+        if re.search(r"ipc", query_lower):
+            _add("Indian Penal Code", "section", ref_upper)
+        if re.search(r"crpc", query_lower):
+            _add("Code of Criminal Procedure, 1973", "section", ref_upper)
+        if re.search(r"it\s*act", query_lower) or re.search(
+            r"information technology act", query_lower
+        ):
+            _add("Information Technology Act, 2000", "section", ref_upper)
+        # If no act matched yet, store with empty act (will be filled later)
+        if not any(t["act"] for t in targets):
+            _add("", "section", ref_upper)
+
+    # Also handle explicit "Section N" or "sec. N" mentions without act shorthand
+    ref_pattern = r"([0-9]+[a-z]?(?:\([0-9a-z]+\))?)"
+    for match in re.finditer(
+        r"(?:section|sec\.?)\s*" + ref_pattern + r"(?=\D|$)",
+        query,
+        flags=re.IGNORECASE,
+    ):
+        _add("", "section", match.group(1).upper())
+    for match in re.finditer(
+        r"(?:article|art\.?)\s*" + ref_pattern + r"(?=\D|$)",
+        query,
+        flags=re.IGNORECASE,
+    ):
+        _add("", "article", match.group(1).upper())
+
+    # Deduplicate: if a reference appears with multiple acts, keep the first
+    # but also try to assign to detected acts
+    deduped: list[dict[str, str]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for t in targets:
+        key = (t["act"], t["reference"])
+        if key not in seen_keys:
+            seen_keys.add(key)
+            deduped.append(t)
+
+    return deduped
+
 
 
 def _normalize_text_token(value: str | None) -> str:

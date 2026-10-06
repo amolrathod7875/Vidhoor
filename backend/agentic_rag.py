@@ -28,6 +28,7 @@ class AgenticRagConfig:
 class AgenticRagHelpers:
     infer_act_filters: Callable[[str], list[str | None]]
     extract_requested_references: Callable[[str], list[str]]
+    extract_legal_targets: Callable[[str], list[dict[str, str]]]
     citation_matches_allowed_acts: Callable[[Any, list[str | None]], bool]
     citation_matches_requested_references: Callable[[Any, list[str]], bool]
     format_citation_context: Callable[[Any], str]
@@ -131,22 +132,24 @@ class AgenticRagRunner:
                         "OR\n"
                         "{{\"status\":\"sufficient\",\"final_answer\":\"...\"}}\n\n"
                         "If you answer, use this exact markdown structure (no extra sections):\n"
-                        "## What you can do\n"
-                        "- Action or remedy in plain language\n"
-                        "  - **Legal basis:** <Act Name> Section <Number>\n"
-                        "  - **Why this helps:** short bullet\n\n"
-                        "## Laws supporting the above actions\n"
-                        "### <Act Name> Section <Number>: Detailed Legal Explanation\n"
-                        "- **What the law states:** bullet points only\n"
-                        "- **Essential legal ingredients:** bullet points only\n"
-                        "- **Punishment or legal consequences:** bullet points only\n"
-                        "- **Exceptions, provisos, and defences:** bullet points only\n"
-                        "- **Practical application:** bullet points only\n"
-                        "- **Limits and uncertainty:** bullet points only\n\n"
+                        "## What it says\n"
+                        "- Key legal provision in plain language\n"
+                        "- **Legal basis:** <Act Name> Section <Number>\n\n"
+                        "## What it means\n"
+                        "- Simple explanation of the provision's effect\n\n"
+                        "## Key legal points\n"
+                        "- Bullet points of essential legal requirements\n\n"
+                        "## Practical relevance\n"
+                        "- How this law applies in practice\n"
+                        "- May include: practical benefits or common use cases\n\n"
+                        "## Important limitations\n"
+                        "- What the law does NOT cover\n"
+                        "- Any uncertainties or provisos\n\n"
                         "## Summary table of applicable laws\n"
-                        "| Offence | BNS Section | Description |\n"
+                        "| Act / Source | Section / Article | What it covers |\n"
                         "| --- | --- | --- |\n"
-                        "| <Short offence label> | Section <Number> | <Single-sentence practical use> |"
+                        "| <Act Name> | Section <Number> | <Single-sentence practical use> |\n"
+                        ""
                     ),
                 ),
             ]
@@ -781,7 +784,19 @@ class AgenticRagRunner:
 
     @staticmethod
     def _query_mentions_reference(query: str) -> bool:
-        return bool(re.search(r"\b(?:section|sec\.?|article|art\.?)\s*\d+", str(query or ""), flags=re.IGNORECASE))
+        normalized = str(query or "").lower()
+        # Check for explicit section/article references with numbers
+        if re.search(r"\b(?:section|sec\.?|article|art\.?)\s*\d+", normalized, flags=re.IGNORECASE):
+            return True
+        # Check for shorthand act+reference patterns like "BNS 64", "IT Act 16", "BNSS 187"
+        if re.search(r"\b(?:bns|bnss|bsa|ipc|crpc)\s+\d+", normalized, flags=re.IGNORECASE):
+            return True
+        if re.search(r"\b(?:it\s*act|information\s+technology\s+act)\s+\d+", normalized, flags=re.IGNORECASE):
+            return True
+        # Check for "section N" without the word section (e.g., "BNS 64" implicitly references section 64)
+        if re.search(r"\b(?:bns|bnss|bsa|ipc|crpc)\s+\d+[a-z]?(?:\([0-9a-z]+\))?\b", normalized, flags=re.IGNORECASE):
+            return True
+        return False
 
     def _looks_like_statute_citation(self, citation: Any) -> bool:
         doc_type = str(getattr(citation, "doc_type", "") or "").lower()

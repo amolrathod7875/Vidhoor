@@ -268,8 +268,42 @@ function ChatApp() {
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const prevTempChat = useRef(tempChat);
   const loadedHistorySessionIds = useRef<Set<string>>(new Set());
-
+  const currentUserIdRef = useRef<string | null>(null);
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
+
+  const clearAccountState = useCallback(() => {
+    setSessions([]);
+    setActiveId(null);
+    setActiveDocuments([]);
+    setDraftHistory([]);
+    setDraftFlow({ step: "idle" });
+    setRenameDialogOpen(false);
+    setRenameValue("");
+    setComposerText("");
+    setEnhanced(null);
+    setLoadingSessionId(null);
+    loadedHistorySessionIds.current.clear();
+    setGuestRemaining(5);
+    setDraftEditorOpen(false);
+    setEditingDraftId(null);
+    setEditingDraftTitle("");
+    setEditingDraftContent("");
+    setIsSavingDraftEdit(false);
+    setIsUploadingDocument(false);
+    setIsTyping(false);
+    setIsGeneratingDraft(false);
+    setIsLoadingDraftHistory(false);
+    setIsEnhancing(false);
+  }, []);
+
+  useEffect(() => {
+    const uid = user?.uid ?? null;
+    if (uid === currentUserIdRef.current) {
+      return;
+    }
+    currentUserIdRef.current = uid;
+    clearAccountState();
+  }, [user?.uid, clearAccountState]);
 
   const sortSessions = useCallback((list: ChatSession[]) => {
     const pinned = list.filter((item) => item.pinned);
@@ -317,8 +351,16 @@ function ChatApp() {
   useEffect(() => {
     const loadHistorySessions = async () => {
       if (!user) {
+        setSessions([]);
+        setActiveId(null);
+        setActiveDocuments([]);
+        setDraftHistory([]);
+        setDraftFlow({ step: "idle" });
+        loadedHistorySessionIds.current.clear();
         return;
       }
+
+      const expectedUid = user.uid;
 
       try {
         const token = await user.getIdToken();
@@ -333,6 +375,10 @@ function ChatApp() {
           throw new Error(`Failed to load sessions (${response.status})`);
         }
 
+        if (currentUserIdRef.current !== expectedUid) {
+          return;
+        }
+
         const data = (await response.json()) as HistorySessionResponse[];
         const mappedSessions: ChatSession[] = data.map((item) => ({
           id: item.session_id,
@@ -343,15 +389,15 @@ function ChatApp() {
 
         setSessions(sortSessions(mappedSessions));
 
-        // Auto-restore the most recent session after a refresh so the
-        // conversation reappears without the user having to click it.
         if (mappedSessions.length > 0 && !activeId) {
           const mostRecent = sortSessions(mappedSessions)[0];
           setActiveId(mostRecent.id);
         }
       } catch (error) {
-        console.error(error);
-        toast.error("Could not load chat history");
+        if (currentUserIdRef.current === expectedUid) {
+          console.error(error);
+          toast.error("Could not load chat history");
+        }
       }
     };
 
@@ -363,6 +409,8 @@ function ChatApp() {
       if (!user || !activeId || tempChat) {
         return;
       }
+
+      const expectedUid = user.uid;
 
       try {
         const token = await user.getIdToken();
@@ -378,6 +426,10 @@ function ChatApp() {
 
         if (!listResponse.ok) {
           throw new Error(`Failed to load evidence list (${listResponse.status})`);
+        }
+
+        if (currentUserIdRef.current !== expectedUid) {
+          return;
         }
 
         const listData = (await listResponse.json()) as EvidenceSummaryResponse[];
@@ -410,6 +462,10 @@ function ChatApp() {
           })
         );
 
+        if (currentUserIdRef.current !== expectedUid) {
+          return;
+        }
+
         const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"]);
 
         setActiveDocuments(
@@ -426,7 +482,9 @@ function ChatApp() {
           }))
         );
       } catch (error) {
-        console.error(error);
+        if (currentUserIdRef.current === expectedUid) {
+          console.error(error);
+        }
       }
     };
 
@@ -442,6 +500,7 @@ function ChatApp() {
         return;
       }
 
+      const expectedUid = user.uid;
       setLoadingSessionId(sessionId);
       try {
         const token = await user.getIdToken();
@@ -457,6 +516,10 @@ function ChatApp() {
 
         if (!response.ok) {
           throw new Error(`Failed to load session messages (${response.status})`);
+        }
+
+        if (currentUserIdRef.current !== expectedUid) {
+          return;
         }
 
         const data = (await response.json()) as HistoryMessageResponse[];
@@ -479,10 +542,14 @@ function ChatApp() {
 
         loadedHistorySessionIds.current.add(sessionId);
       } catch (error) {
-        console.error(error);
-        toast.error("Could not load selected chat");
+        if (currentUserIdRef.current === expectedUid) {
+          console.error(error);
+          toast.error("Could not load selected chat");
+        }
       } finally {
-        setLoadingSessionId(null);
+        if (currentUserIdRef.current === expectedUid) {
+          setLoadingSessionId(null);
+        }
       }
     },
     [user]
@@ -503,6 +570,7 @@ function ChatApp() {
         return;
       }
 
+      const expectedUid = user.uid;
       setIsLoadingDraftHistory(true);
       try {
         const token = await user.getIdToken();
@@ -520,13 +588,21 @@ function ChatApp() {
           throw new Error(`Failed to load draft history (${response.status})`);
         }
 
+        if (currentUserIdRef.current !== expectedUid) {
+          return;
+        }
+
         const data = (await response.json()) as DraftRecordApiResponse[];
         setDraftHistory(data);
       } catch (error) {
-        console.error(error);
-        setDraftHistory([]);
+        if (currentUserIdRef.current === expectedUid) {
+          console.error(error);
+          setDraftHistory([]);
+        }
       } finally {
-        setIsLoadingDraftHistory(false);
+        if (currentUserIdRef.current === expectedUid) {
+          setIsLoadingDraftHistory(false);
+        }
       }
     },
     [user, tempChat]
@@ -562,6 +638,7 @@ function ChatApp() {
     async (text: string, sessionId: string): Promise<string> => {
       let sid = sessionId;
 
+      const expectedUid = user?.uid ?? null;
       setIsTyping(true);
       try {
         const token = user ? await user.getIdToken() : null;
@@ -586,6 +663,10 @@ function ChatApp() {
           throw new Error(`Backend request failed with status ${response.status}`);
         }
 
+        if (currentUserIdRef.current !== expectedUid) {
+          return sid;
+        }
+
         const data = (await response.json()) as ChatApiResponse;
 
         if (data.session_id && data.session_id !== sid) {
@@ -608,15 +689,19 @@ function ChatApp() {
           follow_ups: data.follow_ups ?? [],
         });
       } catch (error) {
-        console.error(error);
-        addMessage(
-          "assistant",
-          "I could not reach the Vidhoor backend right now. Please try again.",
-          sid
-        );
-        toast.error("Backend connection failed");
+        if (currentUserIdRef.current === expectedUid) {
+          console.error(error);
+          addMessage(
+            "assistant",
+            "I could not reach the Vidhoor backend right now. Please try again.",
+            sid
+          );
+          toast.error("Backend connection failed");
+        }
       } finally {
-        setIsTyping(false);
+        if (currentUserIdRef.current === expectedUid) {
+          setIsTyping(false);
+        }
       }
 
       return sid;
@@ -735,6 +820,7 @@ function ChatApp() {
       return { enhanced_prompt: raw };
     }
 
+    const expectedUid = user?.uid ?? null;
     setIsEnhancing(true);
     let finalPrompt = trimmed;
     try {
@@ -752,6 +838,10 @@ function ChatApp() {
         throw new Error(`Enhancement failed with status ${response.status}`);
       }
 
+      if (currentUserIdRef.current !== expectedUid) {
+        return { enhanced_prompt: finalPrompt };
+      }
+
       const data = (await response.json()) as { enhanced_prompt: string };
       const enhancedPrompt = (data.enhanced_prompt || "").trim() || trimmed;
 
@@ -765,11 +855,15 @@ function ChatApp() {
         setComposerText(enhancedPrompt);
       }
     } catch (error) {
-      console.error(error);
-      toast.error("Enhancement failed — using your original prompt");
-      setEnhanced({ raw: trimmed, enhanced: trimmed });
+      if (currentUserIdRef.current === expectedUid) {
+        console.error(error);
+        toast.error("Enhancement failed — using your original prompt");
+        setEnhanced({ raw: trimmed, enhanced: trimmed });
+      }
     } finally {
-      setIsEnhancing(false);
+      if (currentUserIdRef.current === expectedUid) {
+        setIsEnhancing(false);
+      }
     }
 
     return { enhanced_prompt: finalPrompt };
@@ -828,6 +922,7 @@ function ChatApp() {
         return;
       }
 
+      const expectedUid = user.uid;
       const session = sessions.find((item) => item.id === sessionId) ?? null;
       const caseFacts = [extraFacts.trim(), buildSessionDraftFacts(session)]
         .filter((item) => item.length > 0)
@@ -835,12 +930,14 @@ function ChatApp() {
         .trim();
 
       if (!caseFacts) {
-        addMessage(
-          "assistant",
-          "I don’t have enough context yet. Please share key case facts in chat so I can prepare the draft.",
-          sessionId
-        );
-        setDraftFlow({ step: "awaitingFacts", sessionId, applicationType });
+        if (currentUserIdRef.current === expectedUid) {
+          addMessage(
+            "assistant",
+            "I don't have enough context yet. Please share key case facts in chat so I can prepare the draft.",
+            sessionId
+          );
+          setDraftFlow({ step: "awaitingFacts", sessionId, applicationType });
+        }
         return;
       }
 
@@ -868,6 +965,10 @@ function ChatApp() {
           throw new Error(`Draft generation failed with status ${response.status}`);
         }
 
+        if (currentUserIdRef.current !== expectedUid) {
+          return;
+        }
+
         const data = (await response.json()) as DraftGenerateApiResponse;
         const assistantContent = [`### ${data.title}`, data.draft_content, "", `> ${data.disclaimer}`].join("\n");
 
@@ -877,16 +978,20 @@ function ChatApp() {
         setDraftFlow({ step: "idle" });
         toast.success("Draft created");
       } catch (error) {
-        console.error(error);
-        addMessage(
-          "assistant",
-          "I couldn't generate the legal draft right now. Please retry with clearer facts.",
-          sessionId
-        );
-        toast.error("Draft generation failed");
+        if (currentUserIdRef.current === expectedUid) {
+          console.error(error);
+          addMessage(
+            "assistant",
+            "I couldn't generate the legal draft right now. Please retry with clearer facts.",
+            sessionId
+          );
+          toast.error("Draft generation failed");
+        }
       } finally {
-        setIsTyping(false);
-        setIsGeneratingDraft(false);
+        if (currentUserIdRef.current === expectedUid) {
+          setIsTyping(false);
+          setIsGeneratingDraft(false);
+        }
       }
     },
     [addMessage, buildSessionDraftFacts, fetchSessionDrafts, sessions, user]
@@ -954,12 +1059,16 @@ function ChatApp() {
       toast.error(`Only ${availableSlots} more file(s) can be uploaded`);
     }
 
+    const expectedUid = user?.uid ?? null;
     setIsUploadingDocument(true);
     setIsTyping(true);
 
     try {
       const token = user ? await user.getIdToken() : null;
       for (const file of filesToUpload) {
+        if (currentUserIdRef.current !== expectedUid) {
+          return;
+        }
         addMessage("user", `Uploaded document: ${file.name}`, sid);
         const encryptedUpload = await encryptFileForUpload(file);
         const formData = new FormData();
@@ -981,6 +1090,10 @@ function ChatApp() {
 
         if (!response.ok) {
           throw new Error(`Document analysis failed with status ${response.status}`);
+        }
+
+        if (currentUserIdRef.current !== expectedUid) {
+          return;
         }
 
         const data = (await response.json()) as OCRAnalyzeApiResponse;
@@ -1025,16 +1138,20 @@ function ChatApp() {
         }
       }
     } catch (error) {
-      console.error(error);
-      addMessage(
-        "assistant",
-        "I could not process this document right now. Please try again with a clearer scan or a supported file type.",
-        sid
-      );
-      toast.error("Document processing failed");
+      if (currentUserIdRef.current === expectedUid) {
+        console.error(error);
+        addMessage(
+          "assistant",
+          "I could not process this document right now. Please try again with a clearer scan or a supported file type.",
+          sid
+        );
+        toast.error("Document processing failed");
+      }
     } finally {
-      setIsTyping(false);
-      setIsUploadingDocument(false);
+      if (currentUserIdRef.current === expectedUid) {
+        setIsTyping(false);
+        setIsUploadingDocument(false);
+      }
     }
   };
 
@@ -1142,6 +1259,7 @@ function ChatApp() {
       return;
     }
 
+    const expectedUid = user.uid;
     try {
       const token = await user.getIdToken();
       const response = await fetch(`${API_BASE_URL}/api/drafts/${encodeURIComponent(draftId)}`, {
@@ -1155,14 +1273,20 @@ function ChatApp() {
         throw new Error(`Could not load draft (${response.status})`);
       }
 
+      if (currentUserIdRef.current !== expectedUid) {
+        return;
+      }
+
       const draft = (await response.json()) as DraftRecordApiResponse;
       setEditingDraftId(draft.draft_id);
       setEditingDraftTitle(draft.title || "Legal Draft");
       setEditingDraftContent(draft.draft_content || "");
       setDraftEditorOpen(true);
     } catch (error) {
-      console.error(error);
-      toast.error("Could not open draft editor");
+      if (currentUserIdRef.current === expectedUid) {
+        console.error(error);
+        toast.error("Could not open draft editor");
+      }
     }
   };
 
@@ -1171,6 +1295,7 @@ function ChatApp() {
       return;
     }
 
+    const expectedUid = user.uid;
     const nextTitle = editingDraftTitle.trim();
     const nextContent = editingDraftContent.trim();
     if (!nextTitle) {
@@ -1207,6 +1332,10 @@ function ChatApp() {
         throw new Error(errorBody?.detail || `Could not save draft (${response.status})`);
       }
 
+      if (currentUserIdRef.current !== expectedUid) {
+        return;
+      }
+
       const updated = (await response.json()) as DraftRecordApiResponse;
       setDraftHistory((prev) =>
         prev.map((draft) =>
@@ -1229,10 +1358,14 @@ function ChatApp() {
       setDraftEditorOpen(false);
       toast.success("Draft updated");
     } catch (error) {
-      console.error(error);
-      toast.error(error instanceof Error ? error.message : "Could not save draft");
+      if (currentUserIdRef.current === expectedUid) {
+        console.error(error);
+        toast.error(error instanceof Error ? error.message : "Could not save draft");
+      }
     } finally {
-      setIsSavingDraftEdit(false);
+      if (currentUserIdRef.current === expectedUid) {
+        setIsSavingDraftEdit(false);
+      }
     }
   };
 
@@ -1312,6 +1445,7 @@ function ChatApp() {
   };
 
   const handleDeleteSession = async (id: string) => {
+    const expectedUid = user?.uid ?? null;
     try {
       if (user) {
         const token = await user.getIdToken();
@@ -1327,6 +1461,10 @@ function ChatApp() {
         }
       }
 
+      if (currentUserIdRef.current !== expectedUid) {
+        return;
+      }
+
       setSessions((prev) => prev.filter((s) => s.id !== id));
       loadedHistorySessionIds.current.delete(id);
       if (activeId === id) {
@@ -1334,8 +1472,10 @@ function ChatApp() {
       }
       toast.success("Chat deleted");
     } catch (error) {
-      console.error(error);
-      toast.error("Could not delete chat");
+      if (currentUserIdRef.current === expectedUid) {
+        console.error(error);
+        toast.error("Could not delete chat");
+      }
     }
   };
 
@@ -1346,6 +1486,7 @@ function ChatApp() {
     }
 
     const nextPinned = !target.pinned;
+    const expectedUid = user?.uid ?? null;
 
     try {
       if (user) {
@@ -1364,6 +1505,10 @@ function ChatApp() {
         }
       }
 
+      if (currentUserIdRef.current !== expectedUid) {
+        return;
+      }
+
       setSessions((prev) => {
         const updated = prev.map((session) =>
           session.id === id ? { ...session, pinned: nextPinned } : session
@@ -1372,8 +1517,10 @@ function ChatApp() {
       });
       toast.success(nextPinned ? "Chat pinned" : "Chat unpinned");
     } catch (error) {
-      console.error(error);
-      toast.error("Could not update pin state");
+      if (currentUserIdRef.current === expectedUid) {
+        console.error(error);
+        toast.error("Could not update pin state");
+      }
     }
   };
 
@@ -1381,6 +1528,7 @@ function ChatApp() {
     const session = sessions.find((s) => s.id === id);
     if (!session) return;
 
+    const expectedUid = user?.uid ?? null;
     try {
       let shareUrl = "";
 
@@ -1403,6 +1551,10 @@ function ChatApp() {
 
         const payload = (await response.json()) as SessionShareApiResponse;
         shareUrl = String(payload.share_url || "").trim();
+      }
+
+      if (currentUserIdRef.current !== expectedUid) {
+        return;
       }
 
       if (!shareUrl) {
@@ -1428,12 +1580,15 @@ function ChatApp() {
       await navigator.clipboard.writeText(shareUrl);
       toast.success("Share link copied to clipboard");
     } catch (error) {
-      console.error(error);
-      toast.error("Could not create share link");
+      if (currentUserIdRef.current === expectedUid) {
+        console.error(error);
+        toast.error("Could not create share link");
+      }
     }
   };
 
   const handleRenameSession = async (id: string, newTitle: string) => {
+    const expectedUid = user?.uid ?? null;
     try {
       if (user) {
         const token = await user.getIdToken();
@@ -1451,13 +1606,19 @@ function ChatApp() {
         }
       }
 
+      if (currentUserIdRef.current !== expectedUid) {
+        return;
+      }
+
       setSessions((prev) =>
         prev.map((s) => (s.id === id ? { ...s, title: newTitle } : s))
       );
       toast.success("Chat renamed");
     } catch (error) {
-      console.error(error);
-      toast.error("Could not rename chat");
+      if (currentUserIdRef.current === expectedUid) {
+        console.error(error);
+        toast.error("Could not rename chat");
+      }
     }
   };
 

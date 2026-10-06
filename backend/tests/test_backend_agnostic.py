@@ -86,6 +86,7 @@ def _make_runner(retrieval_manager: Any) -> AgenticRagRunner:
     helpers = AgenticRagHelpers(
         infer_act_filters=lambda q: ["Bharatiya Nyaya Sanhita"],
         extract_requested_references=lambda q: ["64"],
+        extract_legal_targets=lambda q: [{"act": "", "reference_type": "section", "reference": "64"}],
         citation_matches_allowed_acts=lambda c, f: True,
         citation_matches_requested_references=lambda c, r: True,
         format_citation_context=lambda c: getattr(c, "snippet", ""),
