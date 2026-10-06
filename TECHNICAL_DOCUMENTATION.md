@@ -65,7 +65,7 @@ Key flow for a chat message (`/api/chat`):
 3. `PIIVault.mask_text` masks PII before any LLM call.
 4. `is_legal_query` routes to legal RAG or general response.
 5. Agentic RAG: **Router LLM** picks act filters + query expansions → **QdrantManager**
-   (hybrid vector + BM25) retrieves chunks → **Judge LLM** generates a grounded answer or
+   (hybrid dense+sparse retrieval) retrieves chunks → **Judge LLM** generates a grounded answer or
    returns `insufficient`.
 6. Answer is unmasked, optional Indian Kanoon links appended, follow-ups generated.
 7. If not temporary and authenticated, the turn is saved to Oracle (with `masked_entities`).
@@ -266,18 +266,6 @@ CREATE TABLE vidhoor_user_feedback (
     updated_at   TIMESTAMP DEFAULT SYSTIMESTAMP
 );
 
--- Persistent legal chunks for BM25 hybrid retrieval
-CREATE TABLE vidhoor_legal_chunks (
-    chunk_id     VARCHAR2(128) PRIMARY KEY,
-    chunk_text   CLOB NOT NULL,
-    status       VARCHAR2(64),
-    act          VARCHAR2(256),
-    source       VARCHAR2(512),
-    section_ref  VARCHAR2(64),
-    metadata_json CLOB,
-    created_at   TIMESTAMP DEFAULT SYSTIMESTAMP,
-    updated_at   TIMESTAMP DEFAULT SYSTIMESTAMP
-);
 ```
 
 > Local/dev fallback: identical schema in SQLite (`backend/sqlite_chat_repo.py`).
